@@ -56,6 +56,7 @@
   <a href="#add-pricelist">เพิ่ม Pricelist ใหม่</a>
   <a href="#import-pav">Import ข้อมูล PAV</a>
   <a href="#walkthrough">ตัวอย่างครบวงจร</a>
+  <a href="#access-control">สิทธิ์ดู Python Code</a>
 </nav>
 
 <!-- ════════════════════════════════════════════════════════════
@@ -1437,6 +1438,112 @@ discount_amt = 7000 − 2520 = 4480</pre>
       <span class="callout-icon">✓</span>
       <span>สูตรนี้ใช้ Pattern: <strong>3 (Area)</strong> สำหรับผ้า · <strong>4 (val_name Guard + pass)</strong> สำหรับระบบ/ราง<br>
       ถ้าเพิ่ม Attribute ใหม่ก็เพิ่ม <code>elif attr_name == '...':</code> ใน Section C ได้ทันที</span>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════
+       ACCESS CONTROL
+  ═════════════════════════════════════════════ -->
+  <section id="access-control">
+    <div class="sec-head"><h2>การจัดการสิทธิ์ดูและแก้ไข Python Code</h2></div>
+    <p style="margin:0 0 1.4rem">Tab <strong>Python Code</strong> ใน Pricing Formula ถูกซ่อนด้วย Group <code>bs_pricing_formula.group_pricing_formula_dev</code> ผู้ใช้ที่ไม่อยู่ใน Group นี้จะมองไม่เห็น tab เลย</p>
+
+    <!-- How it works -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head">
+        <span class="fn-num">?</span>
+        <span class="fn-sig">หลักการทำงาน</span>
+      </div>
+      <div class="fn-body">
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">pricing_formula_views.xml</span><span class="cb-lang">XML</span></div>
+<pre>&lt;page string=<span class="st">"Python Code"</span> name=<span class="st">"code_page"</span>
+      groups=<span class="st">"bs_pricing_formula.group_pricing_formula_dev"</span>&gt;
+    &lt;field name=<span class="st">"code_py1"</span> widget=<span class="st">"ace"</span>/&gt;
+&lt;/page&gt;</pre>
+        </div>
+        <p style="margin-top:.8rem">Odoo ซ่อน <code>&lt;page&gt;</code> ทั้งหมดโดยอัตโนมัติถ้า user ไม่อยู่ใน group ที่กำหนด — ไม่ต้องเขียน Python เพิ่ม</p>
+      </div>
+    </div>
+
+    <!-- Step A: Add user to group -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head" style="background:var(--acc);color:#fff;border-radius:8px 8px 0 0">
+        <span class="fn-num" style="background:rgba(255,255,255,.18);color:#fff">A</span>
+        <span class="fn-sig" style="color:#fff">เพิ่ม User เข้า Group — วิธีที่ 1 (จาก User)</span>
+      </div>
+      <div class="fn-body">
+        <ol style="margin:0;padding-left:1.3rem;line-height:2.2">
+          <li>ไปที่ <strong>Settings → Users &amp; Companies → Users</strong></li>
+          <li>เปิด User ที่ต้องการให้แก้ไขสูตรได้</li>
+          <li>คลิกแท็บ <strong>Other</strong> (หรือ Technical)</li>
+          <li>หัวข้อ <strong>Extra Rights</strong> / ค้นหา <em>Access Pricing Formula</em></li>
+          <li>เปิด checkbox → กด <strong>Save</strong></li>
+        </ol>
+        <div class="callout" style="margin-top:.9rem">
+          <span class="callout-icon">i</span>
+          <span>ถ้าไม่เห็น "Access Pricing Formula" ในหน้า User ให้เปิด <strong>Debug Mode</strong> ก่อน (Settings → เปิด Developer Tools) แล้ว reload หน้า</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step B: Add user via Group -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head" style="background:var(--acc);color:#fff;border-radius:8px 8px 0 0">
+        <span class="fn-num" style="background:rgba(255,255,255,.18);color:#fff">B</span>
+        <span class="fn-sig" style="color:#fff">เพิ่ม User เข้า Group — วิธีที่ 2 (จาก Group โดยตรง)</span>
+      </div>
+      <div class="fn-body">
+        <ol style="margin:0;padding-left:1.3rem;line-height:2.2">
+          <li>เปิด <strong>Debug Mode</strong> → ไปที่ <strong>Settings → Technical → Security → Groups</strong></li>
+          <li>ค้นหา <code>Access Pricing Formula</code></li>
+          <li>แท็บ <strong>Users</strong> → กด <strong>Add a line</strong></li>
+          <li>เลือก User ที่ต้องการ → กด <strong>Save</strong></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Step C: Remove access -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head" style="background:#5a3a1a;color:#fff;border-radius:8px 8px 0 0">
+        <span class="fn-num" style="background:rgba(255,255,255,.18);color:#fff">C</span>
+        <span class="fn-sig" style="color:#fff">ถอน User ออกจาก Group</span>
+      </div>
+      <div class="fn-body">
+        <ol style="margin:0;padding-left:1.3rem;line-height:2.2">
+          <li>เข้า Group <strong>Access Pricing Formula</strong> (ตามวิธี B)</li>
+          <li>แท็บ <strong>Users</strong> → เลือก User ที่ต้องการถอน → กด <strong>Delete</strong> (ไอคอนถังขยะ)</li>
+          <li>กด <strong>Save</strong> — User จะไม่เห็น tab Python Code ทันทีเมื่อ reload</li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Summary table -->
+    <div class="subsec-head">สรุป — ผู้ใช้แต่ละประเภทเห็นอะไร</div>
+    <div class="tbl-wrap" style="margin-bottom:1.4rem">
+      <table>
+        <tr><th>ประเภท User</th><th>เห็น Tab Python Code</th><th>เห็น Tab Linked Product</th></tr>
+        <tr>
+          <td>Administrator (admin)</td>
+          <td style="color:var(--ok);font-weight:700;text-align:center">✓ เห็น</td>
+          <td style="color:var(--ok);font-weight:700;text-align:center">✓ เห็น</td>
+        </tr>
+        <tr>
+          <td>User ที่อยู่ใน Group "Access Pricing Formula"</td>
+          <td style="color:var(--ok);font-weight:700;text-align:center">✓ เห็น</td>
+          <td style="color:var(--ok);font-weight:700;text-align:center">✓ เห็น</td>
+        </tr>
+        <tr>
+          <td>User ทั่วไป (ไม่อยู่ใน Group)</td>
+          <td style="color:#c0392b;font-weight:700;text-align:center">✗ ซ่อน</td>
+          <td style="color:var(--ok);font-weight:700;text-align:center">✓ เห็น</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-icon">⚠</span>
+      <span>การซ่อน tab เป็นเพียง <strong>UI Layer</strong> — user ที่มีสิทธิ์อ่าน model <code>pricing.formula</code> อาจยังเข้าถึงข้อมูลผ่าน RPC ได้ หากต้องการป้องกันระดับ Data ต้องเพิ่ม record rule หรือจำกัด access ใน <code>ir.model.access.csv</code> ด้วย</span>
     </div>
   </section>
 
