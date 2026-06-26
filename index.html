@@ -1,0 +1,1481 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>หลักการเขียน Python ใน Pricing Formula — BS Curtain</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="layout">
+
+<!-- ════════════════════════════════════════════════════════════
+     LEFT NAVIGATION
+════════════════════════════════════════════════════════════ -->
+<nav class="toc-rail" id="toc" aria-label="สารบัญ">
+  <div class="toc-head">สารบัญ</div>
+
+  <a href="#overview">ภาพรวม</a>
+
+  <div class="toc-sep"></div>
+
+  <a href="#s0"><span class="toc-tag">§0</span> Init</a>
+  <a href="#s1"><span class="toc-tag">§1</span> Pricelist</a>
+  <a href="#s2"><span class="toc-tag">§2</span> Dimensions</a>
+  <a href="#s3"><span class="toc-tag">§3</span> Helper Functions</a>
+  <a href="#fn1" class="sub">calc_multi_discount</a>
+  <a href="#fn2" class="sub">get_component_qty</a>
+  <a href="#fn3" class="sub">get_component_sales_price</a>
+  <a href="#fn4" class="sub">get_price_from_pricing_line</a>
+  <a href="#fn5" class="sub">get_attr_value_float</a>
+  <a href="#s4"><span class="toc-tag">§4</span> attr_val_ids</a>
+  <a href="#s5"><span class="toc-tag">§5</span> Main Loop</a>
+  <a href="#sa" class="sub">A — Reset</a>
+  <a href="#sb" class="sub">B — Lookup</a>
+  <a href="#sc" class="sub">C — Logic พิเศษ</a>
+  <a href="#sd" class="sub">D — คำนวณรวม</a>
+
+  <div class="toc-sep"></div>
+
+  <a href="#patterns">Pattern Catalog</a>
+  <a href="#p1"  class="sub">1 · Zero / Free</a>
+  <a href="#p2"  class="sub">2 · Pass-through</a>
+  <a href="#p3"  class="sub">3 · Area / Length</a>
+  <a href="#p4"  class="sub">4 · val_name Guard</a>
+  <a href="#p5"  class="sub">5 · ID-safe Match</a>
+  <a href="#p6"  class="sub">6 · BOM qty</a>
+  <a href="#p7"  class="sub">7 · Cross-Attribute</a>
+  <a href="#p8"  class="sub">8 · Custom Value</a>
+  <a href="#p9"  class="sub">9 · Size Conditional</a>
+  <a href="#p10" class="sub">10 · Multi-step</a>
+  <a href="#p11" class="sub">11 · Chained Modifier</a>
+
+  <div class="toc-sep"></div>
+
+  <a href="#add-pricelist">เพิ่ม Pricelist ใหม่</a>
+  <a href="#import-pav">Import ข้อมูล PAV</a>
+  <a href="#walkthrough">ตัวอย่างครบวงจร</a>
+</nav>
+
+<!-- ════════════════════════════════════════════════════════════
+     MAIN CONTENT
+════════════════════════════════════════════════════════════ -->
+<main class="main">
+
+  <!-- ── HEADER ── -->
+  <header class="doc-header">
+    <div class="doc-eyebrow">BS Curtain System · Odoo 14 · Internal Developer Guide</div>
+    <h1>หลักการเขียน Python<br>ใน Pricing Formula</h1>
+    <p class="lead">
+      อธิบายทุกบรรทัดตั้งแต่ Section 0–5 · Helper Functions ทุกตัว ·
+      Section C Pattern Catalog 11 แบบ พร้อม Flow Diagram ภาพรวม
+    </p>
+  </header>
+
+  <!-- ════════════════════════════════════════════
+       § OVERVIEW
+  ═════════════════════════════════════════════ -->
+  <section id="overview">
+    <div class="sec-head"><h2>ภาพรวมโครงสร้างสูตร</h2></div>
+
+    <div class="overview-grid">
+      <div class="ogcard">
+        <div class="on">SECTION 0</div>
+        <div class="ot">Init</div>
+        <div class="od">Reset <code>price=0.0</code> และ <code>attr_prices={}</code> ก่อนทุกครั้ง</div>
+      </div>
+      <div class="ogcard">
+        <div class="on">SECTION 1</div>
+        <div class="ot">Pricelist</div>
+        <div class="od">ตรวจ sale_order / wizard → กำหนด <code>pricelist_name</code></div>
+      </div>
+      <div class="ogcard">
+        <div class="on">SECTION 2</div>
+        <div class="ot">Dimensions</div>
+        <div class="od"><code>width</code>, <code>height</code>, eval versions, <code>tmpl_id</code></div>
+      </div>
+      <div class="ogcard">
+        <div class="on">SECTION 3</div>
+        <div class="ot">Helper Functions</div>
+        <div class="od">นิยาม 5 ฟังก์ชัน ก่อนเข้า Main Loop</div>
+      </div>
+      <div class="ogcard">
+        <div class="on">SECTION 4</div>
+        <div class="ot">attr_val_ids</div>
+        <div class="od">dict ชื่อ Attribute → PAV id สำหรับ ID-safe match</div>
+      </div>
+      <div class="ogcard" style="border-color:var(--acc)">
+        <div class="on">SECTION 5 ★</div>
+        <div class="ot" style="color:var(--acc)">Main Loop</div>
+        <div class="od">วน values → A Reset → B Lookup → C Logic → D Calc</div>
+      </div>
+    </div>
+
+    <!-- FLOW DIAGRAM -->
+    <div class="flow-outer">
+      <div class="flow">
+        <div class="fbox start" style="min-width:260px">evaluate_price(values, components, …)</div>
+        <div class="farr"></div>
+        <div class="fbox ghost">§0 — price = 0.0 · attr_prices = {}</div>
+        <div class="farr"></div>
+        <div class="fbox ghost">§1 — หา pricelist → pricelist_name</div>
+        <div class="farr"></div>
+        <div class="fbox ghost">§2 — width · height · width_eval · tmpl_id</div>
+        <div class="farr"></div>
+        <div class="fbox pur">§3 — นิยาม Helper Functions 5 ตัว</div>
+        <div class="farr"></div>
+        <div class="fbox amb">§4 — สร้าง attr_val_ids dict</div>
+        <div class="farr"></div>
+        <div class="loop-wrap">
+          <div class="loop-label">for loop</div>
+          <div class="loop-inner">
+            <div class="fbox ghost" style="min-width:200px;font-size:.73rem">
+              for attr_name, val_name in values.items()
+            </div>
+            <div class="farr"></div>
+            <div class="frow">
+              <div class="fdiamond">isinstance<br>str?</div>
+              <div style="display:flex;align-items:center;gap:4px;margin-left:.45rem">
+                <span class="frow-lbl">ไม่ใช่ →</span>
+                <div class="frow-arr"></div>
+                <div class="fbox" style="padding:.36rem .65rem;font-size:.72rem;border-color:var(--red);background:var(--red-lt);color:var(--red);min-width:auto">continue</div>
+              </div>
+            </div>
+            <div class="farr-lbl" style="color:var(--grn)">ใช่ ↓</div>
+            <div class="fbox grn" style="min-width:200px;font-size:.74rem">A — Reset unit_price · qty · addons · discount</div>
+            <div class="farr"></div>
+            <div class="fbox pur" style="min-width:200px;font-size:.74rem">B — Lookup B1 pricing.attr.value + B2 BOM</div>
+            <div class="farr"></div>
+            <div class="fbox amb" style="min-width:200px;font-size:.74rem">C — if/elif chain แยกตาม attr_name</div>
+            <div class="farr"></div>
+            <div class="fbox acc" style="min-width:200px;font-size:.74rem">D — total · discount · price += · store</div>
+          </div>
+        </div>
+        <div class="farr"></div>
+        <div class="fbox end" style="min-width:260px">return price, attr_prices</div>
+      </div>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ════════════════════════════════════════════
+       § 0 INIT
+  ═════════════════════════════════════════════ -->
+  <section id="s0">
+    <div class="sec-head"><span class="sec-num">§0</span><h2>Init — กำหนดค่าเริ่มต้น</h2></div>
+
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">ต้นสูตรทุกตัว · 2 บรรทัดแรก</span><span class="cb-lang">Python</span></div>
+<pre><span class="hi">price       = <span class="nm">0.0</span></span>    <span class="ann">← ตัวแปรราคารวมสุดท้าย (output) — บวกสะสมทีละ Attribute ใน Loop</span>
+<span class="hi">attr_prices = {}</span>    <span class="ann">← dict เก็บรายละเอียดต่อ Attribute เพื่อแสดงใน Preview table</span></pre>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-icon">⚠</span>
+      <span>ทำไมต้อง reset? เพราะ <code>safe_eval</code> รัน code ทุกครั้งที่ Attribute เปลี่ยน — ถ้าไม่ reset ค่าเก่าจะค้างและบวกซ้ำในรอบถัดไป</span>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════
+       § 1 PRICELIST
+  ═════════════════════════════════════════════ -->
+  <section id="s1">
+    <div class="sec-head"><span class="sec-num">§1</span><h2>Pricelist — ตรวจ pricelist ปัจจุบัน</h2></div>
+
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">ทุกสูตร</span><span class="cb-lang">Python</span></div>
+<pre>pricelist_name  = <span class="st">'online'</span>    <span class="ann">← ค่า default ถ้าไม่เจอ pricelist ใดๆ</span>
+current_pricelist = <span class="kw">None</span>
+current_partner   = <span class="kw">None</span>
+
+<span class="kw">if</span> sale_order:                          <span class="ann">← กรณีเปิดจาก Sale Order โดยตรง</span>
+    current_pricelist = sale_order.pricelist_id
+    current_partner   = sale_order.partner_id
+<span class="kw">elif</span> wizard <span class="kw">and</span> wizard.sale_order_id:    <span class="ann">← เปิดจาก Config Wizard ที่ผูกกับ SO</span>
+    current_pricelist = wizard.sale_order_id.pricelist_id
+    current_partner   = wizard.sale_order_id.partner_id
+
+<span class="kw">if not</span> current_partner:
+    current_partner = env.user.partner_id  <span class="ann">← fallback: user ที่ login อยู่</span>
+
+<span class="kw">if</span> current_pricelist:
+    pl_id = current_pricelist.id
+    <span class="kw">if</span>   pl_id <span class="kw">in</span> [<span class="nm">8</span>]:  pricelist_name = <span class="st">'credit'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">9</span>]:  pricelist_name = <span class="st">'cash'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">7</span>]:  pricelist_name = <span class="st">'homeowner'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">6</span>]:  pricelist_name = <span class="st">'modern_trade'</span></pre>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <tr>
+          <th>ตัวแปร</th><th>Type</th><th>ค่าที่เป็นไปได้</th><th>ใช้ใน</th>
+        </tr>
+        <tr>
+          <td class="tc">pricelist_name</td>
+          <td class="tp">str</td>
+          <td>'online' / 'credit' / 'cash' / 'homeowner' / 'modern_trade'</td>
+          <td>get_price_from_pricing_line()</td>
+        </tr>
+        <tr>
+          <td class="tc">current_pricelist</td>
+          <td class="tp">record | None</td>
+          <td>pricelist record หรือ None</td>
+          <td>get_component_sales_price()</td>
+        </tr>
+        <tr>
+          <td class="tc">current_partner</td>
+          <td class="tp">record</td>
+          <td>res.partner (ไม่เคย None หลัง fallback)</td>
+          <td>get_component_sales_price()</td>
+        </tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════
+       § 2 DIMENSIONS
+  ═════════════════════════════════════════════ -->
+  <section id="s2">
+    <div class="sec-head"><span class="sec-num">§2</span><h2>Dimensions — ขนาดและ template id</h2></div>
+
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">ทุกสูตร</span><span class="cb-lang">Python</span></div>
+<pre>width       = <span class="fn">float</span>(values.get(<span class="st">'width'</span>,  <span class="nm">1.0</span>) <span class="kw">or</span> <span class="nm">1.0</span>)   <span class="ann">← or 1.0 ป้องกัน None / 0 / ''</span>
+height      = <span class="fn">float</span>(values.get(<span class="st">'height'</span>, <span class="nm">1.0</span>) <span class="kw">or</span> <span class="nm">1.0</span>)
+
+width_eval  = <span class="fn">max</span>(width,  <span class="nm">1.0</span>)   <span class="ann">← ค่าขั้นต่ำ — ป้องกันคำนวณด้วย 0 (ต่างกันตามสินค้า)</span>
+height_eval = <span class="fn">max</span>(height, <span class="nm">2.0</span>)   <span class="ann">← ขั้นต่ำ 2.0 หรือ 1.0 หรือ 0.3 แล้วแต่สูตร</span>
+
+tmpl_id = product_template.id <span class="kw">if</span> product_template <span class="kw">else</span> (
+          wizard.product_tmpl_id.id <span class="kw">if</span> wizard <span class="kw">else</span> <span class="kw">None</span>)
+          <span class="ann">← ID ของ product.template — ใช้ค้นหา pricing.attribute.value ใน Section B</span></pre>
+    </div>
+
+    <div class="callout warn">
+      <span class="callout-icon">⚠</span>
+      <span>ใช้ <code>width_eval</code> / <code>height_eval</code> ในการคำนวณพื้นที่เสมอ —
+        <code>width</code> / <code>height</code> (ค่าจริงที่ผู้ใช้กรอก) ใช้เฉพาะ logic ที่ต้องตรวจขนาดจริง เช่น "ดัดโค้ง ≤ 6ม."</span>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ════════════════════════════════════════════
+       § 3 HELPER FUNCTIONS
+  ═════════════════════════════════════════════ -->
+  <section id="s3">
+    <div class="sec-head"><span class="sec-num">§3</span><h2>Helper Functions — 5 ฟังก์ชัน</h2></div>
+
+    <div class="callout pur">
+      <span class="callout-icon">i</span>
+      <span>ต้องนิยามทุกฟังก์ชันก่อน Main Loop — Python ต้อง define ก่อนจึงเรียกได้
+        ใน <code>safe_eval</code> sandbox ห้าม <code>import</code> module ใดๆ ใช้ built-in เท่านั้น</span>
+    </div>
+
+    <!-- Fn 1 -->
+    <div class="fn-card" id="fn1">
+      <div class="fn-head">
+        <span class="fn-num">Fn 1</span>
+        <span class="fn-sig">calc_multi_discount(base_price, discount_str)</span>
+      </div>
+      <div class="fn-body">
+        <p>คำนวณส่วนลดแบบ multi-tier — คืน <strong>tuple (discount_amount, net_price)</strong></p>
+        <div class="callout ok">
+          <span class="callout-icon">✓</span>
+          <span>รองรับ 2 รูปแบบ: <code>'30%'</code> = ลด % | <code>'200'</code> = ลบ flat 200 บาท | <code>'30%+200'</code> = ผสม</span>
+        </div>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">อธิบายทุกบรรทัด</span><span class="cb-lang">Python</span></div>
+<pre><span class="kw">def</span> <span class="fn">calc_multi_discount</span>(base_price, discount_str):
+
+    <span class="kw">if not</span> discount_str <span class="kw">or</span> discount_str <span class="kw">in</span> (<span class="st">'-'</span>, <span class="st">'0'</span>, <span class="st">'0.0'</span>, <span class="st">''</span>):
+        <span class="kw">return</span> <span class="nm">0.0</span>, base_price    <span class="ann">← ไม่มีส่วนลด → return ทันที</span>
+
+    <span class="kw">try</span>:
+        remaining = base_price         <span class="ann">← เริ่มจากราคาเต็ม แล้วหักทีละขั้น</span>
+        <span class="kw">for</span> p <span class="kw">in</span> discount_str.replace(<span class="st">' '</span>, <span class="st">''</span>).split(<span class="st">'+'</span>):
+            <span class="ann">     ↑ ลบ space → split ด้วย '+' → ['30%', '200', '5%']</span>
+            <span class="kw">if not</span> p: <span class="kw">continue</span>
+            <span class="kw">if</span> <span class="st">'%'</span> <span class="kw">in</span> p:
+                remaining *= (<span class="nm">1.0</span> - <span class="fn">float</span>(p.replace(<span class="st">'%'</span>, <span class="st">''</span>)) / <span class="nm">100.0</span>)
+                <span class="ann">            ↑ '30%' → remaining × 0.70</span>
+            <span class="kw">else</span>:
+                remaining -= <span class="fn">float</span>(p)
+                <span class="ann">           ↑ '200' → remaining − 200 บาท</span>
+        <span class="kw">return</span> base_price - remaining, remaining
+        <span class="ann">↑ return (จำนวนที่ลด, ราคาหลังลด)</span>
+    <span class="kw">except</span> Exception:
+        <span class="kw">return</span> <span class="nm">0.0</span>, base_price  <span class="ann">← parse ผิดพลาด → safe fallback ไม่ลดเลย</span></pre>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <tr><th>discount_str</th><th>base_price</th><th>return</th></tr>
+            <tr><td class="tc">''</td><td>1,000</td><td>(0.0, 1000.0)</td></tr>
+            <tr><td class="tc">'30%'</td><td>1,000</td><td>(300.0, 700.0)</td></tr>
+            <tr><td class="tc">'50%+20%'</td><td>1,000</td><td>(600.0, 400.0) ← ×0.5 × 0.8</td></tr>
+            <tr><td class="tc">'30%+200'</td><td>1,000</td><td>(500.0, 500.0) ← ×0.7 แล้ว −200</td></tr>
+            <tr><td class="tc">'150'</td><td>1,000</td><td>(150.0, 850.0)</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fn 2 -->
+    <div class="fn-card" id="fn2">
+      <div class="fn-head">
+        <span class="fn-num">Fn 2</span>
+        <span class="fn-sig">get_component_qty(c_desc, default_qty=1.0, prefix_match=False)</span>
+      </div>
+      <div class="fn-body">
+        <p>ดึง <strong>จำนวน (qty)</strong> ของ Component จาก BOM Preview<br>
+           ค้นแบบ <em>exact match</em> จาก description / name / default_code (default)<br>
+           หรือแบบ <em>prefix match</em> จาก default_code เมื่อส่ง <code>prefix_match=True</code></p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">อธิบายทุกบรรทัด</span><span class="cb-lang">Python</span></div>
+<pre><span class="kw">def</span> <span class="fn">get_component_qty</span>(c_desc, default_qty=<span class="nm">1.0</span>, prefix_match=<span class="nm">False</span>):
+
+    <span class="kw">for</span> c <span class="kw">in</span> components:           <span class="ann">← วน list BOM Preview (qty ที่ BOM คำนวณแล้ว)</span>
+        <span class="kw">if</span> prefix_match:            <span class="ann">← โหมด prefix — ค้นจาก default_code เท่านั้น</span>
+            <span class="kw">if</span> (c.get(<span class="st">'default_code'</span>) <span class="kw">or</span> <span class="st">''</span>).startswith(c_desc):
+                <span class="kw">return</span> <span class="fn">float</span>(c.get(<span class="st">'qty'</span>, default_qty))
+        <span class="kw">elif</span> c_desc <span class="kw">in</span> (            <span class="ann">← โหมดปกติ — exact match ทุก field</span>
+            c.get(<span class="st">'description'</span>) <span class="kw">or</span> <span class="st">''</span>,
+            c.get(<span class="st">'name'</span>)        <span class="kw">or</span> <span class="st">''</span>,
+            c.get(<span class="st">'default_code'</span>) <span class="kw">or</span> <span class="st">''</span>
+        ):
+            <span class="kw">return</span> <span class="fn">float</span>(c.get(<span class="st">'qty'</span>, <span class="nm">0.0</span>))
+
+    <span class="kw">return</span> default_qty   <span class="ann">← ไม่เจอ → ใช้ default</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fn 3 -->
+    <div class="fn-card" id="fn3">
+      <div class="fn-head">
+        <span class="fn-num">Fn 3</span>
+        <span class="fn-sig">get_component_sales_price(c_desc, default_price=0.0)</span>
+      </div>
+      <div class="fn-body">
+        <p>ดึง <strong>ราคาขายของ Component</strong> ผ่าน Pricelist ปัจจุบัน — ถ้าไม่มีใช้ list_price</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">อธิบายทุกบรรทัด</span><span class="cb-lang">Python</span></div>
+<pre><span class="kw">def</span> <span class="fn">get_component_sales_price</span>(c_desc, default_price=<span class="nm">0.0</span>):
+
+    <span class="kw">for</span> c <span class="kw">in</span> components:
+        <span class="kw">if</span> c_desc <span class="kw">in</span> (c.get(<span class="st">'description'</span>) <span class="kw">or</span> <span class="st">''</span>,
+                      c.get(<span class="st">'name'</span>)        <span class="kw">or</span> <span class="st">''</span>,
+                      c.get(<span class="st">'default_code'</span>) <span class="kw">or</span> <span class="st">''</span>):
+            prod_id = c.get(<span class="st">'product_id'</span>)
+            <span class="kw">if</span> prod_id:
+                prod = env[<span class="st">'product.product'</span>].browse(prod_id)
+                <span class="kw">if</span> current_pricelist:
+                    <span class="kw">try</span>:
+                        <span class="kw">return</span> current_pricelist.get_product_price(prod, <span class="nm">1.0</span>, current_partner)
+                        <span class="ann">                           ↑ ราคาตาม pricelist (qty=1)</span>
+                    <span class="kw">except</span> Exception:
+                        <span class="kw">return</span> prod.list_price <span class="kw">or</span> default_price
+                <span class="kw">return</span> prod.list_price <span class="kw">or</span> default_price
+    <span class="kw">return</span> default_price</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fn 4 -->
+    <div class="fn-card" id="fn4">
+      <div class="fn-head">
+        <span class="fn-num">Fn 4</span>
+        <span class="fn-sig">get_price_from_pricing_line(pl)</span>
+      </div>
+      <div class="fn-body">
+        <p>ดึง <code>(unit_price, addons_price, discount_str)</code> จาก record <code>pricing.attribute.value</code> ตาม pricelist_name ที่กำหนดใน §1</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">อธิบายทุกบรรทัด</span><span class="cb-lang">Python</span></div>
+<pre><span class="kw">def</span> <span class="fn">get_price_from_pricing_line</span>(pl):
+
+    <span class="kw">if not</span> pl:
+        <span class="kw">return</span> <span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="st">''</span>   <span class="ann">← ป้องกัน None record</span>
+
+    <span class="kw">if</span>   pricelist_name == <span class="st">'credit'</span>:
+        <span class="kw">return</span> pl.credit,       pl.addons_price_credit,       pl.discount_credit       <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'cash'</span>:
+        <span class="kw">return</span> pl.cash,         pl.addons_price_cash,         pl.discount_cash         <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'homeowner'</span>:
+        <span class="kw">return</span> pl.homeowner,    pl.addons_price_homeowner,    pl.discount_homeowner    <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'modern_trade'</span>:
+        <span class="kw">return</span> pl.modern_trade, pl.addons_price_modern_trade, pl.discount_modern_trade <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">else</span>:                    <span class="ann">← default: online</span>
+        <span class="kw">return</span> pl.online,      pl.addons_price_online,       pl.discount_online       <span class="kw">or</span> <span class="st">''</span></pre>
+        </div>
+        <div class="callout">
+          <span class="callout-icon">i</span>
+          <span><code>pl.discount_credit or ''</code> — ถ้า field เป็น <code>None</code> ให้ใช้ <code>''</code> แทน เพราะ <code>calc_multi_discount</code> รับ string ไม่รับ None</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fn 5 -->
+    <div class="fn-card" id="fn5">
+      <div class="fn-head">
+        <span class="fn-num">Fn 5</span>
+        <span class="fn-sig">get_attr_value_float(attr_name=None, attr_id=None, default=0.0)</span>
+      </div>
+      <div class="fn-body">
+        <p>ดึงค่าตัวเลขจาก Attribute — รองรับ <strong>2 วิธีค้นหา</strong> (ชื่อ / id) และ <strong>2 แหล่งข้อมูล</strong> (ค่าที่เลือก / custom_value)</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">อธิบายทุกบรรทัด</span><span class="cb-lang">Python</span></div>
+<pre><span class="kw">def</span> <span class="fn">get_attr_value_float</span>(attr_name=<span class="kw">None</span>, attr_id=<span class="kw">None</span>, default=<span class="nm">0.0</span>):
+    raw = <span class="st">''</span>
+
+    <span class="cm"># วิธีที่ 1: ค้นจากชื่อ Attribute</span>
+    <span class="kw">if</span> attr_name:
+        raw = values.get(attr_name, <span class="st">''</span>)
+        <span class="kw">if</span> raw <span class="kw">in</span> (<span class="st">'ระบุ'</span>, <span class="st">'custom'</span>, <span class="st">''</span>) <span class="kw">and</span> wizard:
+            <span class="ann">↑ 'ระบุ' = ผู้ใช้พิมพ์เอง → ต้องอ่าน custom_value จาก wizard</span>
+            <span class="kw">try</span>:
+                _found = [_l <span class="kw">for</span> _l <span class="kw">in</span> wizard.attr_line_ids
+                          <span class="kw">if</span> _l.attribute_id.name == attr_name]
+                <span class="kw">if</span> _found <span class="kw">and</span> _found[<span class="nm">0</span>].custom_value:
+                    raw = _found[<span class="nm">0</span>].custom_value
+            <span class="kw">except</span> Exception: <span class="kw">pass</span>
+
+    <span class="cm"># วิธีที่ 2: ค้นจาก attr_id (reliable กว่า ถ้าชื่ออาจเปลี่ยน)</span>
+    <span class="kw">if not</span> raw <span class="kw">and</span> attr_id <span class="kw">is not None and</span> wizard:
+        <span class="kw">try</span>:
+            _found = [_l <span class="kw">for</span> _l <span class="kw">in</span> wizard.attr_line_ids
+                      <span class="kw">if</span> _l.attribute_id.id == attr_id]   <span class="ann">← match by ID</span>
+            <span class="kw">if</span> _found:
+                raw = _found[<span class="nm">0</span>].custom_value <span class="kw">or</span> (
+                      _found[<span class="nm">0</span>].value_id.name <span class="kw">if</span> _found[<span class="nm">0</span>].value_id <span class="kw">else</span> <span class="st">''</span>)
+        <span class="kw">except</span> Exception: <span class="kw">pass</span>
+
+    <span class="kw">if</span> raw:
+        <span class="kw">try</span>:
+            <span class="kw">return</span> <span class="fn">float</span>(<span class="fn">str</span>(raw).replace(<span class="st">','</span>, <span class="st">''</span>).strip())
+            <span class="ann">                   ↑ '2,500' → '2500' → 2500.0</span>
+        <span class="kw">except</span> (ValueError, TypeError):
+            <span class="kw">return</span> default
+    <span class="kw">return</span> default</pre>
+        </div>
+        <p>ตัวอย่างการใช้งาน: <code>leaf_height = get_attr_value_float('ความสูงใบ', attr_id=238, default=height_eval)</code></p>
+      </div>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ════════════════════════════════════════════
+       § 4 ATTR_VAL_IDS
+  ═════════════════════════════════════════════ -->
+  <section id="s4">
+    <div class="sec-head"><span class="sec-num">§4</span><h2>attr_val_ids — dict ชื่อ Attribute → PAV id</h2></div>
+
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">ทุกสูตร</span><span class="cb-lang">Python</span></div>
+<pre>attr_val_ids = {}
+
+<span class="kw">if</span> wizard:
+    <span class="kw">try</span>:
+        <span class="kw">for</span> l <span class="kw">in</span> wizard.attr_line_ids:
+            <span class="kw">if</span> l.attribute_id <span class="kw">and</span> l.value_id:
+                attr_val_ids[l.attribute_id.name] = l.value_id.id
+                <span class="ann">← เก็บ: {'สีใบ': 1234, 'รุ่น': 5678, 'ดัดโค้ง': 3389}</span>
+    <span class="kw">except</span> Exception:
+        <span class="kw">pass</span>   <span class="ann">← wizard transient อาจหมดอายุ</span></pre>
+    </div>
+
+    <div class="callout">
+      <span class="callout-icon">i</span>
+      <span><strong>ใช้ทำไม?</strong> ใน Section C เราเช็คทั้ง <code>val_name</code> และ <code>val_id</code> —
+        ถ้า admin เปลี่ยนชื่อ Value ใน Odoo การ match ด้วย id ยังถูกต้อง ป้องกัน bug จากชื่อที่เปลี่ยน</span>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ════════════════════════════════════════════
+       § 5 MAIN LOOP
+  ═════════════════════════════════════════════ -->
+  <section id="s5">
+    <div class="sec-head"><span class="sec-num">§5</span><h2>Main Loop</h2><span class="sec-sub">for attr_name, val_name in values.items()</span></div>
+
+    <!-- A -->
+    <div class="subsec-head" id="sa">A — Reset ต้นรอบ</div>
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">ต้นรอบทุก Attribute</span><span class="cb-lang">Python</span></div>
+<pre><span class="kw">for</span> attr_name, val_name <span class="kw">in</span> values.items():
+    <span class="kw">if not</span> val_name <span class="kw">or not</span> <span class="fn">isinstance</span>(val_name, <span class="fn">str</span>):
+        <span class="kw">continue</span>   <span class="ann">← ข้าม width/height (float) และค่า None/False</span>
+
+    unit_price   = <span class="nm">0.0</span>   <span class="ann">← ราคาต่อหน่วย (บาท/ตร.ม. หรือ บาท/ชิ้น)</span>
+    addons_price = <span class="nm">0.0</span>   <span class="ann">← add-on บวกหลัง qty×unit</span>
+    qty          = <span class="nm">1.0</span>   <span class="ann">← จำนวน default=1 ชิ้น</span>
+    discount_str = <span class="st">''</span>    <span class="ann">← discount string เช่น '30%+5%'</span>
+    val_id = attr_val_ids.get(attr_name)   <span class="ann">← PAV id ที่เลือก</span></pre>
+    </div>
+    <div class="callout warn">
+      <span class="callout-icon">⚠</span>
+      <span>ต้อง reset ทุกรอบ — ค่า <code>unit_price</code> จาก Attribute ก่อนหน้าจะ "รั่ว" เข้ารอบถัดไปถ้าไม่ reset</span>
+    </div>
+
+    <!-- B -->
+    <div class="subsec-head" id="sb">B — Lookup ราคาพื้นฐาน</div>
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">B1 pricing.attribute.value + B2 BOM override</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="cm"># B1: Tab "Pricing Attribute Value" ของ Product</span>
+    <span class="kw">if</span> tmpl_id:
+        pricing_line = env[<span class="st">'pricing.attribute.value'</span>].search([
+            (<span class="st">'product_tmpl_id'</span>, <span class="st">'='</span>, tmpl_id),
+            (<span class="st">'attribute_id.name'</span>, <span class="st">'='</span>, attr_name),
+            (<span class="st">'value_id.name'</span>, <span class="st">'='</span>, val_name)
+        ], limit=<span class="nm">1</span>)
+        <span class="kw">if</span> pricing_line:
+            unit_price, addons_price, discount_str = get_price_from_pricing_line(pricing_line)
+
+    <span class="cm"># B2: BOM Component override</span>
+    unit_price = get_component_sales_price(val_name, unit_price)
+    <span class="ann">               ↑ ถ้า val_name ตรงกับ Component → ใช้ราคา Pricelist Component
+               ↑ ถ้าไม่เจอ → คืน default=unit_price (ค่าจาก B1 คงเดิม)</span></pre>
+    </div>
+    <div class="callout warn">
+      <span class="callout-icon">⚠</span>
+      <span><strong>B2 จะ override B1 เสมอ</strong> ถ้าชื่อ val_name ตรงกับ Component ใน BOM</span>
+    </div>
+
+    <!-- C -->
+    <div class="subsec-head" id="sc">C — Logic พิเศษ (if / elif chain)</div>
+    <div class="callout pur">
+      <span class="callout-icon">i</span>
+      <span>ส่วนนี้คือหัวใจของแต่ละสูตร — Attribute ที่ต้องการ logic พิเศษมี block ที่นี่
+        Attribute ที่ไม่มี block จะใช้ราคาจาก B ตรงๆ (qty=1) ดู Pattern Catalog ด้านล่าง</span>
+    </div>
+
+    <!-- D -->
+    <div class="subsec-head" id="sd">D — คำนวณรวม + Store</div>
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">ปลายรอบทุก Attribute</span><span class="cb-lang">Python</span></div>
+<pre>    total_price = qty * unit_price
+    <span class="ann">                ↑ แสดงราคาก่อนลด = จำนวน × ราคาต่อหน่วย (addons_price ไม่รวมที่นี่)</span>
+
+    discount_amt, net_price = calc_multi_discount(total_price + addons_price, discount_str)
+    <span class="ann">                                                 ↑ บวก addons_price ก่อนเข้า function
+                                                   เพื่อให้ discount คำนวณจากฐานราคาที่ครบถ้วน</span>
+
+    price += net_price   <span class="ann">← net_price = (total_price + addons_price) − discount_amt</span>
+
+    discount_pct_str = discount_str
+    <span class="ann">                    ↑ แสดง format เดิม '50%+20%+10%' — ไม่แปลงเป็น % สำเร็จรูป</span>
+
+    attr_prices[attr_name] = {
+        <span class="st">'price_unit'</span>:       unit_price,
+        <span class="st">'qty'</span>:              qty,
+        <span class="st">'price_val'</span>:        total_price,     <span class="ann">← qty × unit_price (ไม่รวม addons)</span>
+        <span class="st">'addones_price'</span>:    addons_price,    <span class="ann">← เก็บแยก ให้ _compute_price_net บวกเอง</span>
+        <span class="st">'discount_percent'</span>: discount_pct_str,
+        <span class="st">'discount_amount'</span>:  <span class="fn">round</span>(discount_amt, <span class="nm">2</span>),
+    }</pre>
+    </div>
+
+    <div class="callout ok">
+      <span class="callout-icon">✓</span>
+      <span><code>_compute_price_net</code> ใน model คำนวณ <code>price_net = (price_val + addones_price) − discount_amount</code>
+        ซึ่งตรงกับ net_price ที่ได้จากสูตร — ค่าสอดคล้องกันเสมอ</span>
+    </div>
+
+    <div class="formula-box">
+      <span class="fmla">total = qty × unit_price · base = total + addons · net = base − discount · price += net</span>
+      <span class="fval">price = Σ net_i</span>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ════════════════════════════════════════════
+       PATTERN CATALOG
+  ═════════════════════════════════════════════ -->
+  <section id="patterns">
+    <div class="sec-head"><h2>Pattern Catalog — Section C ทุก Pattern</h2></div>
+
+    <!-- P1 -->
+    <div class="pcard" id="p1">
+      <div class="pcard-head"><span class="pnum">Pattern 1</span><span class="ptitle">Zero / Free — ไม่คิดราคาเลย</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-green">zero</span>Attribute ที่ไม่คิดเงิน มีไว้จำแนกประเภทหรือ config — ต้องตั้งทั้ง qty=0 และ unit_price=0</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: กลุ่มขนาดใบ, สีใบ, ดึงและปรับ</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'กลุ่มขนาดใบ'</span>:
+        qty        = <span class="nm">0.0</span>   <span class="ann">← qty=0 → total = 0×unit = 0 ไม่ว่า unit จะเป็นอะไร</span>
+        unit_price = <span class="nm">0.0</span>   <span class="ann">← ป้องกันกรณี addons_price ≠ 0 ด้วย</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'สีใบ'</span>:        <span class="cm"># รวมอยู่ในราคารุ่นแล้ว</span>
+        qty = <span class="nm">0.0</span>; unit_price = <span class="nm">0.0</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'ดึงและปรับ'</span>:   <span class="cm"># config option ไม่มีราคา</span>
+        qty = <span class="nm">0.0</span>; unit_price = <span class="nm">0.0</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P2 -->
+    <div class="pcard" id="p2">
+      <div class="pcard-head"><span class="pnum">Pattern 2</span><span class="ptitle">Pass-through — ราคาจาก B ตรงๆ qty=1</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-blue">pass</span>ใช้ราคาจาก pricing.attribute.value โดยตรง เขียน <code>pass</code> เพื่อบอกผู้อ่านว่า "ตั้งใจไม่มี logic พิเศษ"</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: สีราง, สีเทปผ้า, สีโซ่</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'สีราง'</span>:
+        <span class="kw">pass</span>    <span class="ann">← unit_price, addons_price, discount_str ดึงจาก B1 · qty=1 (default)</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'สีเทปผ้า'</span>:
+        <span class="kw">pass</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'สีโซ่'</span>:
+        <span class="kw">pass</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P3 -->
+    <div class="pcard" id="p3">
+      <div class="pcard-head"><span class="pnum">Pattern 3</span><span class="ptitle">Area / Length — qty = ขนาด</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-blue">area</span>unit_price มาจาก B (บาท/ตร.ม. หรือ บาท/ม.) — ปรับแค่ qty ให้เท่ากับพื้นที่หรือความยาว</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: รุ่น พื้นที่ · สีใบ overlap · รางข้าง ม. · สกรีน พื้นที่</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="cm"># รุ่น ม่านม้วน — overlap 20% (ผ้าทับกัน)</span>
+    <span class="kw">if</span> attr_name == <span class="st">'สีใบ'</span>:
+        qty = width * height * <span class="nm">1.2</span>   <span class="ann">← 1.2 = เผื่อผ้าทับกัน 20%</span>
+
+    <span class="cm"># รุ่น ฉากกั้นห้อง — ดึงความสูงใบจาก Attribute</span>
+    <span class="kw">if</span> attr_name == <span class="st">'รุ่น'</span>:
+        leaf_height = get_attr_value_float(<span class="st">'ความสูงใบ'</span>, attr_id=<span class="nm">238</span>, default=height_eval)
+        qty = width_eval * leaf_height * <span class="nm">1.2</span>
+
+    <span class="cm"># รุ่น มู่ลี่ — พื้นที่ธรรมดา</span>
+    <span class="kw">if</span> attr_name == <span class="st">'รุ่น'</span>:
+        qty = width_eval * height_eval
+
+    <span class="cm"># รางข้าง — ราคาต่อเมตรความสูง</span>
+    <span class="kw">elif</span> attr_name == <span class="st">'รางข้าง'</span>:
+        qty = height   <span class="ann">← ความยาวราง = ความสูงห้อง</span>
+
+    <span class="cm"># สกรีน — พื้นที่พิมพ์ (ไม่มี overlap)</span>
+    <span class="kw">elif</span> attr_name == <span class="st">'สกรีน'</span>:
+        qty = width * height</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P4 -->
+    <div class="pcard" id="p4">
+      <div class="pcard-head"><span class="pnum">Pattern 4</span><span class="ptitle">val_name Guard — if 'ไม่เอา': zero</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-green">guard</span>คิดเงินเฉพาะบาง value — ถ้าเลือก 'ไม่เอา' หรือ '-' ให้ zero out ทั้ง qty และ unit_price</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: รีโมท, ความยาวโซ่, ค่ารุ่น</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'รีโมท'</span>:
+        <span class="kw">if</span> val_name <span class="kw">in</span> (<span class="st">'ไม่เอา'</span>, <span class="st">'-'</span>):
+            unit_price = <span class="nm">0.0</span>; qty = <span class="nm">0.0</span>
+        <span class="cm"># else: ราคาจาก B, qty=1</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'ความยาวโซ่'</span>:
+        <span class="kw">if</span> val_name <span class="kw">in</span> (<span class="st">'ตามเรท'</span>, <span class="st">'-'</span>):   <span class="ann">← 'ตามเรท' รวมอยู่ใน BOM แล้ว</span>
+            qty = <span class="nm">0.0</span>; unit_price = <span class="nm">0.0</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'ค่ารุ่น'</span>:
+        <span class="kw">if</span> val_name <span class="kw">in</span> (<span class="st">'-'</span>, <span class="st">'ไม่เอา'</span>):
+            unit_price = <span class="nm">0.0</span>; qty = <span class="nm">0.0</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P5 -->
+    <div class="pcard" id="p5">
+      <div class="pcard-head"><span class="pnum">Pattern 5</span><span class="ptitle">ID-safe Match — val_name OR val_id</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-amb">id-safe</span>match ด้วยทั้งชื่อและ id — ป้องกัน admin เปลี่ยนชื่อ Value ใน Odoo แต่ id คงเดิม</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: เพิ่มรางล่าง, ตัวต่อราง</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'เพิ่มรางล่าง'</span>:
+        <span class="kw">if</span> val_name == <span class="st">'เพิ่ม'</span> <span class="kw">or</span> val_id == <span class="nm">3074</span>:   <span class="ann">← ชื่อ OR id</span>
+            r_leaf_qty   = get_component_qty(<span class="st">'ลูกล้อ'</span>, <span class="nm">0.0</span>)
+            r_leaf_price = get_component_sales_price(<span class="st">'ลูกล้อ'</span>, <span class="nm">0.0</span>)
+            r_hnd_qty    = get_component_qty(<span class="st">'ลูกล้อเสามือจับ (มีรู)'</span>, <span class="nm">0.0</span>)
+            r_hnd_price  = get_component_sales_price(<span class="st">'ลูกล้อเสามือจับ (มีรู)'</span>, <span class="nm">0.0</span>)
+            unit_price   = (r_leaf_qty * r_leaf_price) + (r_hnd_qty * r_hnd_price) \
+                           + (width * <span class="nm">99.0</span>) + <span class="nm">200.0</span>
+            <span class="ann">           ↑ ลูกล้อ + ลูกล้อมือจับ + รางล่าง(99/ม.) + ค่าแรง(200)</span>
+            qty = <span class="nm">1.0</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'ตัวต่อราง'</span>:
+        <span class="kw">if</span> val_name == <span class="st">'เพิ่ม'</span> <span class="kw">or</span> val_id == <span class="nm">3461</span>:
+            unit_price = <span class="nm">0.0</span> <span class="kw">if</span> width > <span class="nm">3.0</span> <span class="kw">else</span> <span class="nm">10.0</span>
+            <span class="ann">           ↑ ฟรีถ้ากว้างเกิน 3ม. (ตัวต่อรวมในราคาราง)</span>
+            qty = <span class="nm">1.0</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P6 -->
+    <div class="pcard" id="p6">
+      <div class="pcard-head"><span class="pnum">Pattern 6</span><span class="ptitle">BOM qty — get_component_qty()</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-pur">bom-qty</span>qty ที่ถูกต้องอยู่ใน BOM แล้ว — ดึงด้วย Fn 2 แทนการวน <code>for c in components</code> เอง<br>
+           ใช้ <code>prefix_match=True</code> เมื่อต้องการค้นด้วย prefix ของ Internal Reference</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: ขายื่น prefix_match · ขายื่น val_name · บังราง qty+price</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="cm"># ค้น Component ด้วย prefix ของ Internal Reference — ใช้ prefix_match=True</span>
+    <span class="kw">elif</span> attr_name == <span class="st">'ขายื่น'</span>:
+        qty = get_component_qty(<span class="st">'C19-R38RX-002W'</span>, <span class="nm">1.0</span>, prefix_match=<span class="nm">True</span>)
+        <span class="ann">    ↑ ค้น default_code ที่ขึ้นต้นด้วย 'C19-R38RX-002W' — ไม่ต้องวน loop เอง</span>
+
+    <span class="cm"># ค้น Component ด้วย val_name</span>
+    <span class="kw">elif</span> attr_name == <span class="st">'ขายื่น'</span>:
+        <span class="kw">if</span> val_name <span class="kw">in</span> (<span class="st">'ไม่เอา'</span>, <span class="st">'-'</span>):
+            unit_price = <span class="nm">0.0</span>; qty = <span class="nm">0.0</span>
+        <span class="kw">else</span>:
+            qty = get_component_qty(val_name, <span class="nm">1.0</span>)
+
+    <span class="cm"># ดึงทั้ง qty และ price จาก BOM</span>
+    <span class="kw">elif</span> attr_name == <span class="st">'บังราง'</span>:
+        <span class="kw">if</span> val_name <span class="kw">in</span> (<span class="st">'-'</span>, <span class="st">'ไม่เอา'</span>, <span class="st">'ไม่ใช้'</span>):
+            unit_price = <span class="nm">0.0</span>; qty = <span class="nm">0.0</span>
+        <span class="kw">else</span>:
+            bom_qty = get_component_qty(val_name, <span class="nm">1.0</span>)
+            <span class="kw">if</span> bom_qty > <span class="nm">0</span>:
+                qty = bom_qty
+                bom_price = get_component_sales_price(val_name, unit_price)
+                <span class="kw">if</span> bom_price > <span class="nm">0</span>:
+                    unit_price = bom_price</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P7 -->
+    <div class="pcard" id="p7">
+      <div class="pcard-head"><span class="pnum">Pattern 7</span><span class="ptitle">Cross-Attribute — อ่าน Attribute อื่นก่อนตัดสินใจ</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-amb">cross</span>ราคา / qty ของ Attribute A ขึ้นกับค่าที่เลือกใน Attribute B — ใช้ <code>values.get('ชื่อ')</code></p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: เพิ่มมือจับ (qty ×2 ถ้า 'แยกกลาง')</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'เพิ่มมือจับ'</span>:
+        <span class="kw">if</span> val_name != <span class="st">'ไม่เอา'</span>:
+            pull_adjust = values.get(<span class="st">'ดึงและปรับ'</span>, <span class="st">''</span>)
+            <span class="ann">                        ↑ อ่าน Attribute 'ดึงและปรับ' จาก values dict</span>
+            qty = <span class="nm">2.0</span> <span class="kw">if</span> <span class="st">'แยกกลาง'</span> <span class="kw">in</span> pull_adjust <span class="kw">else</span> <span class="nm">1.0</span>
+            <span class="ann">    ↑ 'แยกกลาง' → มือจับ 2 ข้าง / ดึงข้างเดียว → qty=1</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P8 -->
+    <div class="pcard" id="p8">
+      <div class="pcard-head"><span class="pnum">Pattern 8</span><span class="ptitle">Custom Value — ผู้ใช้พิมพ์ตัวเลขเอง</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-pur">custom</span>Attribute ที่ผู้ใช้พิมพ์ค่าตัวเลขเอง — อ่านจาก <code>wizard.attr_line_ids[x].custom_value</code></p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: สลิง (ราคา = 990 + ความยาว × 100 บาท/ม.)</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'สลิง'</span>:
+        custom_len = <span class="nm">0.0</span>
+        <span class="kw">if</span> wizard:
+            <span class="kw">try</span>:
+                lines = [l <span class="kw">for</span> l <span class="kw">in</span> wizard.attr_line_ids
+                         <span class="kw">if</span> l.attribute_id.name == <span class="st">'สลิง'</span>]
+                <span class="kw">if</span> lines <span class="kw">and</span> lines[<span class="nm">0</span>].value_id <span class="kw">and</span> lines[<span class="nm">0</span>].value_id.is_custom:
+                    <span class="ann">↑ ตรวจว่า value ที่เลือกเป็น custom input</span>
+                    <span class="kw">try</span>:
+                        custom_len = <span class="fn">float</span>(lines[<span class="nm">0</span>].custom_value <span class="kw">or</span> <span class="nm">0</span>)
+                    <span class="kw">except</span> ValueError:
+                        custom_len = <span class="nm">0.0</span>
+            <span class="kw">except</span> Exception: <span class="kw">pass</span>
+        unit_price = <span class="nm">990.0</span> + (custom_len * <span class="nm">100.0</span>)
+        qty = <span class="nm">1.0</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P9 -->
+    <div class="pcard" id="p9">
+      <div class="pcard-head"><span class="pnum">Pattern 9</span><span class="ptitle">Size Conditional — ราคาขึ้นกับขนาด</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-blue">size-cond</span>ราคาแยกตาม width / height — ใช้ conditional expression หรือ if/elif</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: ดัดโค้ง (3 sub-cases ตามประเภทและขนาด)</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'ดัดโค้ง'</span>:
+
+        <span class="kw">if</span> val_name == <span class="st">'ครึ่งวงกลม (ส่งแบบ)'</span> <span class="kw">or</span> val_id == <span class="nm">3389</span>:
+            unit_price = <span class="nm">500.0</span> <span class="kw">if</span> width <= <span class="nm">6.0</span> <span class="kw">else</span> <span class="nm">1000.0</span>
+            <span class="ann">           ↑ ≤6ม. = 500 / >6ม. = 1000</span>
+            qty = <span class="nm">1.0</span>
+
+        <span class="kw">elif</span> val_name == <span class="st">'วงกลม (ส่งแบบ)'</span> <span class="kw">or</span> val_id == <span class="nm">3402</span>:
+            unit_price = <span class="nm">1000.0</span> <span class="kw">if</span> width <= <span class="nm">6.0</span> <span class="kw">else</span> <span class="nm">2000.0</span>
+            qty = <span class="nm">1.0</span>
+
+        <span class="kw">elif</span> val_name == <span class="st">'โค้งตามแบบ (ส่งแบบ)'</span> <span class="kw">or</span> val_id == <span class="nm">3387</span>:
+            custom_price = <span class="nm">0.0</span>
+            <span class="kw">if</span> wizard:
+                <span class="kw">try</span>:
+                    bend_lines = [l <span class="kw">for</span> l <span class="kw">in</span> wizard.attr_line_ids
+                                  <span class="kw">if</span> l.attribute_id.name == <span class="st">'ดัดโค้ง'</span>]
+                    <span class="kw">if</span> bend_lines <span class="kw">and</span> bend_lines[<span class="nm">0</span>].custom_value:
+                        custom_price = <span class="fn">float</span>(bend_lines[<span class="nm">0</span>].custom_value)
+                <span class="kw">except</span> Exception: <span class="kw">pass</span>
+            unit_price = custom_price; qty = <span class="nm">1.0</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P10 -->
+    <div class="pcard" id="p10">
+      <div class="pcard-head"><span class="pnum">Pattern 10</span><span class="ptitle">Multi-step Derived — คำนวณหลายขั้นก่อนได้ราคา</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-red">multi-step</span>ซับซ้อนที่สุด: หา factor → ceiling → เปรียบมาตรฐาน → ราคา = ส่วนที่เกิน</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: จำนวนช่องกระจก (7 ขั้นตอน)</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'จำนวนช่องกระจก'</span>:
+
+        <span class="cm"># Step 1: หา factor ใบ/ม. ตาม prefix 2 ตัวของรุ่น</span>
+        prefix = (values.get(<span class="st">'รุ่น'</span>, <span class="st">''</span>) <span class="kw">or</span> <span class="st">''</span>)[:<span class="nm">2</span>].upper()
+        <span class="kw">if</span>   prefix <span class="kw">in</span> (<span class="st">'UV'</span>,<span class="st">'TH'</span>,<span class="st">'KC'</span>): factor_leaf = <span class="nm">11.3</span>
+        <span class="kw">elif</span> prefix <span class="kw">in</span> (<span class="st">'UK'</span>,<span class="st">'JP'</span>):       factor_leaf = <span class="nm">10.0</span>
+        <span class="kw">elif</span> prefix <span class="kw">in</span> (<span class="st">'PM'</span>,<span class="st">'LM'</span>,<span class="st">'NY'</span>,<span class="st">'WD'</span>): factor_leaf = <span class="nm">9.0</span>
+        <span class="kw">elif</span> prefix == <span class="st">'GD'</span>:               factor_leaf = <span class="nm">8.0</span>
+        <span class="kw">elif</span> prefix == <span class="st">'TK'</span>:               factor_leaf = <span class="nm">4.0</span>
+        <span class="kw">else</span>:                              factor_leaf = <span class="nm">11.3</span>
+
+        <span class="cm"># Step 2: คำนวณใบ → ceiling เสมอ</span>
+        leaves_raw  = width * factor_leaf
+        leaves_int  = <span class="fn">int</span>(leaves_raw)
+        leaves_ceil = leaves_int <span class="kw">if</span> leaves_raw == leaves_int <span class="kw">else</span> leaves_int + <span class="nm">1</span>
+
+        <span class="cm"># Step 3: 'แยกกลาง' → ต้องเป็นเลขคู่</span>
+        pull_adjust = values.get(<span class="st">'ดึงและปรับ'</span>, <span class="st">''</span>)
+        <span class="kw">if</span> <span class="st">'แยกกลาง'</span> <span class="kw">in</span> pull_adjust <span class="kw">and</span> leaves_ceil % <span class="nm">2</span> != <span class="nm">0</span>:
+            leaves_ceil += <span class="nm">1</span>
+
+        <span class="cm"># Step 4: override ด้วย qty จาก BOM จริง</span>
+        leaves_ceil = get_component_qty(<span class="st">'ใบใหญ่'</span>, leaves_ceil)
+
+        <span class="cm"># Step 5: standard panes ตามความสูง</span>
+        <span class="kw">if</span>   height <= <span class="nm">2.6</span>: standard_panes = <span class="nm">3</span>
+        <span class="kw">elif</span> height <= <span class="nm">3.0</span>: standard_panes = <span class="nm">4</span>
+        <span class="kw">else</span>:               standard_panes = <span class="nm">5</span>
+
+        <span class="cm"># Step 6: อ่านจำนวนช่องที่ลูกค้าเลือก</span>
+        selected_panes = <span class="nm">0</span>
+        <span class="kw">if</span> val_name <span class="kw">not in</span> (<span class="st">'ตามเรท'</span>, <span class="st">'-'</span>, <span class="st">''</span>):
+            <span class="kw">try</span>: selected_panes = <span class="fn">int</span>(val_name)
+            <span class="kw">except</span> ValueError: selected_panes = <span class="nm">0</span>
+
+        <span class="cm"># Step 7: ราคา = ช่องที่เกิน × 100 บาท/ช่อง</span>
+        unit_price = <span class="fn">max</span>(<span class="nm">0</span>, selected_panes - standard_panes) * <span class="nm">100.0</span>
+        qty = leaves_ceil   <span class="ann">← × จำนวนใบ</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- P11 -->
+    <div class="pcard" id="p11">
+      <div class="pcard-head"><span class="pnum">Pattern 11</span><span class="ptitle">Chained Modifier — ราคาถูก ×N โดย Attribute อื่น</span></div>
+      <div class="pcard-body">
+        <p><span class="pbadge pb-pur">chain</span>คำนวณ unit_price ขั้นแรกก่อน แล้วตรวจ Attribute อื่น → คูณเพิ่มอีกชั้น</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: เพิ่มความยาวราง (×2 ถ้ามีรางล่าง)</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="kw">elif</span> attr_name == <span class="st">'เพิ่มความยาวราง'</span>:
+        is_custom = <span class="kw">False</span>; extra_len = <span class="nm">0.0</span>
+
+        <span class="cm"># Pass 1: อ่าน custom_value</span>
+        <span class="kw">if</span> wizard:
+            <span class="kw">try</span>:
+                extra_lines = [l <span class="kw">for</span> l <span class="kw">in</span> wizard.attr_line_ids
+                               <span class="kw">if</span> l.attribute_id.name == <span class="st">'เพิ่มความยาวราง'</span>]
+                <span class="kw">if</span> extra_lines <span class="kw">and</span> (extra_lines[<span class="nm">0</span>].is_custom <span class="kw">or</span>
+                   (extra_lines[<span class="nm">0</span>].value_id <span class="kw">and</span> extra_lines[<span class="nm">0</span>].value_id.is_custom)):
+                    is_custom = <span class="kw">True</span>
+                    <span class="kw">try</span>: extra_len = <span class="fn">float</span>(extra_lines[<span class="nm">0</span>].custom_value <span class="kw">or</span> <span class="nm">0</span>)
+                    <span class="kw">except</span> ValueError: extra_len = <span class="nm">0.0</span>
+            <span class="kw">except</span> Exception: <span class="kw">pass</span>
+        <span class="kw">else</span>:
+            <span class="kw">if</span> val_name <span class="kw">not in</span> (<span class="st">'-'</span>, <span class="st">'ไม่เอา'</span>, <span class="st">''</span>):
+                <span class="kw">try</span>: extra_len = <span class="fn">float</span>(val_name); is_custom = <span class="kw">True</span>
+                <span class="kw">except</span> ValueError: is_custom = <span class="kw">False</span>
+
+        <span class="kw">if</span> is_custom:
+            unit_price = extra_len * <span class="nm">99.0</span>   <span class="ann">← Pass 1: ราคา = ความยาว × 99 บาท/ม.</span>
+            qty = <span class="nm">1.0</span>
+
+        <span class="cm"># Pass 2: ถ้ามีรางล่าง → ×2 (ต้องซื้อราง 2 เส้น)</span>
+        val_id_lr = attr_val_ids.get(<span class="st">'เพิ่มรางล่าง'</span>)
+        <span class="kw">if</span> values.get(<span class="st">'เพิ่มรางล่าง'</span>) == <span class="st">'เพิ่ม'</span> <span class="kw">or</span> val_id_lr == <span class="nm">3074</span>:
+            unit_price = unit_price * <span class="nm">2.0</span>   <span class="ann">← 0×2=0 ถ้า is_custom=False ยังถูก</span></pre>
+        </div>
+        <div class="callout warn">
+          <span class="callout-icon">⚠</span>
+          <span>Pass 2 ต้องอยู่หลัง Pass 1 เสมอ — แต่ทำงานได้ถูกต้องแม้ unit_price=0 เพราะ 0×2=0</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- ════════════════════════════════════════════
+       BEST PRACTICES
+  ═════════════════════════════════════════════ -->
+  <section id="add-pricelist">
+    <div class="sec-head"><h2>วิธีการเพิ่ม Pricelist ใหม่</h2></div>
+    <p style="margin:0 0 1.4rem">เมื่อต้องการรองรับ pricelist ใหม่นอกเหนือจากที่มีอยู่ (<code>online / credit / cash / homeowner / modern_trade</code>) ต้องแก้ไข <strong>3 จุด</strong> ตามลำดับ</p>
+
+    <!-- Step 1 -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head" style="background:var(--acc);color:#fff;border-radius:8px 8px 0 0">
+        <span class="fn-num" style="background:rgba(255,255,255,.18);color:#fff">1</span>
+        <span class="fn-sig" style="color:#fff">เพิ่ม Field ใน Model <code style="background:rgba(255,255,255,.18);color:#fff">pricing.attribute.value</code></span>
+      </div>
+      <div class="fn-body">
+        <p>ไฟล์ Python ของ model <code>pricing.attribute.value</code> ต้องเพิ่ม field ใหม่ <strong>3 field</strong> ต่อ 1 pricelist</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง: เพิ่ม pricelist "dealer"</span><span class="cb-lang">Python (Odoo Model)</span></div>
+<pre>    dealer            = fields.Float(<span class="st">'Dealer Price'</span>,       digits=<span class="st">'Product Price'</span>)
+    addons_price_dealer = fields.Float(<span class="st">'Dealer Add-on Price'</span>, digits=<span class="st">'Product Price'</span>)
+    discount_dealer   = fields.Char(<span class="st">'Dealer Discount'</span>)   <span class="ann">← format เช่น '30%+10%'</span></pre>
+        </div>
+        <p style="margin-top:.8rem">หลังเพิ่ม field ต้อง <strong>upgrade module</strong> (<code>-u bs_pricing_formula</code>) และเปิด Form view กรอกราคาใหม่ใน PAV ทุก record ที่ต้องการ</p>
+      </div>
+    </div>
+
+    <!-- Step 2 -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head" style="background:var(--acc);color:#fff;border-radius:8px 8px 0 0">
+        <span class="fn-num" style="background:rgba(255,255,255,.18);color:#fff">2</span>
+        <span class="fn-sig" style="color:#fff">§1 — map pricelist ID → <code style="background:rgba(255,255,255,.18);color:#fff">pricelist_name</code></span>
+      </div>
+      <div class="fn-body">
+        <p>เปิด record Pricelist ใน Odoo (Sales → Configuration → Pricelists) แล้วดู <strong>ID</strong> จาก URL แล้วเพิ่มบรรทัด <code>elif</code> ใน Section §1 ของสูตรทุกตัวที่ต้องการรองรับ pricelist นี้</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">§1 เพิ่มบรรทัดนี้</span><span class="cb-lang">Python (Pricing Formula)</span></div>
+<pre><span class="kw">if</span> current_pricelist:
+    pl_id = current_pricelist.id
+    <span class="kw">if</span>   pl_id <span class="kw">in</span> [<span class="nm">8</span>]:  pricelist_name = <span class="st">'credit'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">9</span>]:  pricelist_name = <span class="st">'cash'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">7</span>]:  pricelist_name = <span class="st">'homeowner'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">6</span>]:  pricelist_name = <span class="st">'modern_trade'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">XX</span>]: pricelist_name = <span class="st">'dealer'</span>   <span class="ann">← เพิ่มบรรทัดนี้ (XX = ID จริงใน DB)</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3 -->
+    <div class="fn-card">
+      <div class="fn-head" style="background:var(--acc);color:#fff;border-radius:8px 8px 0 0">
+        <span class="fn-num" style="background:rgba(255,255,255,.18);color:#fff">3</span>
+        <span class="fn-sig" style="color:#fff">Fn 4 — เพิ่ม branch ใน <code style="background:rgba(255,255,255,.18);color:#fff">get_price_from_pricing_line()</code></span>
+      </div>
+      <div class="fn-body">
+        <p>แก้ไขใน <strong>Helper Function Fn 4</strong> ของสูตรทุกตัว — เพิ่ม <code>elif</code> ก่อน <code>else</code> (online)</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">Fn 4 เพิ่มบรรทัดนี้</span><span class="cb-lang">Python (Pricing Formula)</span></div>
+<pre><span class="kw">def</span> <span class="fn">get_price_from_pricing_line</span>(pl):
+    <span class="kw">if not</span> pl: <span class="kw">return</span> <span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="st">''</span>
+
+    <span class="kw">if</span>   pricelist_name == <span class="st">'credit'</span>:      <span class="kw">return</span> pl.credit,       pl.addons_price_credit,       pl.discount_credit       <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'cash'</span>:        <span class="kw">return</span> pl.cash,         pl.addons_price_cash,         pl.discount_cash         <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'homeowner'</span>:   <span class="kw">return</span> pl.homeowner,    pl.addons_price_homeowner,    pl.discount_homeowner    <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'modern_trade'</span>: <span class="kw">return</span> pl.modern_trade, pl.addons_price_modern_trade, pl.discount_modern_trade <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'dealer'</span>:     <span class="kw">return</span> pl.dealer,       pl.addons_price_dealer,       pl.discount_dealer       <span class="kw">or</span> <span class="st">''</span>
+    <span class="ann">    ↑ เพิ่มบรรทัดนี้ — ชื่อ field ต้องตรงกับที่เพิ่มใน Step 1</span>
+    <span class="kw">else</span>:                               <span class="kw">return</span> pl.online,       pl.addons_price_online,       pl.discount_online       <span class="kw">or</span> <span class="st">''</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:1.4rem">
+      <span class="callout-icon">i</span>
+      <span>ถ้าต้องการให้ทุกสูตรรองรับ pricelist ใหม่ต้องแก้ไข §1 และ Fn 4 <strong>ในทุก formula record</strong> — Section §0–§4 ไม่ได้ share กัน แต่ละสูตรมีโค้ดเป็นของตัวเอง</span>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════
+       IMPORT PAV
+  ═════════════════════════════════════════════ -->
+  <section id="import-pav">
+    <div class="sec-head"><h2>Import ข้อมูล Pricing Attribute Value</h2></div>
+    <p style="margin:0 0 1.4rem">ตาราง <code>pricing.attribute.value</code> เปิดจาก <strong>Configurator → Configuration → Pricing Attribute Value</strong><br>
+    วิธีที่ปลอดภัยที่สุดคือ <strong>Export ก่อน → แก้ใน Excel → Import กลับ</strong> เพื่อให้ได้ format ที่ถูกต้องแน่นอน</p>
+
+    <!-- Step A: Export -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head">
+        <span class="fn-num">A</span>
+        <span class="fn-sig">Export เพื่อดู format (แนะนำทำก่อนเสมอ)</span>
+      </div>
+      <div class="fn-body">
+        <ol style="margin:0;padding-left:1.3rem;line-height:2">
+          <li>เปิดหน้า <strong>Pricing Attribute Value</strong> (List View)</li>
+          <li>กด <strong>Action (⚙)</strong> → <strong>Export</strong></li>
+          <li>เลือก <em>Export compatible with import</em> และเลือกทุก field ที่ต้องการ</li>
+          <li>กด <strong>Export to CSV</strong> — ไฟล์ที่ได้มี header ที่ Odoo รับได้ทันที</li>
+        </ol>
+        <div class="callout" style="margin-top:.9rem">
+          <span class="callout-icon">i</span>
+          <span>Column header ในไฟล์ export จะเป็น <strong>Technical Name</strong> เช่น <code>product_tmpl_id/id</code>, <code>credit</code>, <code>discount_cash</code> — ใช้ชื่อเหล่านี้ตรง ๆ เมื่อสร้าง CSV ใหม่</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step B: CSV format -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head">
+        <span class="fn-num">B</span>
+        <span class="fn-sig">เตรียม CSV — Column Headers ที่จำเป็น</span>
+      </div>
+      <div class="fn-body">
+        <p style="margin-bottom:.8rem">ชื่อ Column ใน CSV ต้องตรงกับ <strong>Technical Field Name</strong> — ดูตารางด้านล่าง</p>
+        <div class="tbl-wrap">
+          <table>
+            <tr><th>Column (CSV Header)</th><th>Field Type</th><th>ค่าที่ใส่</th><th>ตัวอย่าง</th></tr>
+            <tr>
+              <td class="tc">product_tmpl_id</td>
+              <td class="tp">Many2one</td>
+              <td>ชื่อ Product Template ที่แสดงใน UI (ต้องตรงทุกตัวอักษร)</td>
+              <td><code>ม่านม้วน</code></td>
+            </tr>
+            <tr>
+              <td class="tc">attribute_id</td>
+              <td class="tp">Many2one</td>
+              <td>ชื่อ Attribute</td>
+              <td><code>สี</code></td>
+            </tr>
+            <tr>
+              <td class="tc">value_id</td>
+              <td class="tp">Many2one</td>
+              <td>ชื่อ Attribute Value</td>
+              <td><code>ขาว</code></td>
+            </tr>
+            <tr>
+              <td class="tc">credit</td>
+              <td class="tp">Float</td>
+              <td>ราคาเครดิต</td>
+              <td><code>1500.00</code></td>
+            </tr>
+            <tr>
+              <td class="tc">cash</td>
+              <td class="tp">Float</td>
+              <td>ราคาเงินสด</td>
+              <td><code>1400.00</code></td>
+            </tr>
+            <tr>
+              <td class="tc">modern_trade</td>
+              <td class="tp">Float</td>
+              <td>ราคา Modern Trade</td>
+              <td><code>1600.00</code></td>
+            </tr>
+            <tr>
+              <td class="tc">homeowner</td>
+              <td class="tp">Float</td>
+              <td>ราคาลูกค้าบ้าน</td>
+              <td><code>1350.00</code></td>
+            </tr>
+            <tr>
+              <td class="tc">online</td>
+              <td class="tp">Float</td>
+              <td>ราคาออนไลน์</td>
+              <td><code>1450.00</code></td>
+            </tr>
+            <tr>
+              <td class="tc">addons_price_credit</td>
+              <td class="tp">Float</td>
+              <td>Add-on price เครดิต</td>
+              <td><code>0.00</code></td>
+            </tr>
+            <tr>
+              <td class="tc">discount_credit</td>
+              <td class="tp">Char</td>
+              <td>Discount string — ว่างหรือ format เช่น <code>50%+20%</code></td>
+              <td><code>50%+20%</code></td>
+            </tr>
+            <tr>
+              <td class="tc">discount_cash</td>
+              <td class="tp">Char</td>
+              <td>เช่นเดียวกัน</td>
+              <td><code>55%+20%</code></td>
+            </tr>
+          </table>
+        </div>
+
+        <p style="margin-top:1rem;margin-bottom:.6rem">ตัวอย่าง CSV (บรรทัดแรก = header, บรรทัดถัดไป = ข้อมูล)</p>
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">ตัวอย่าง PAV.csv</span><span class="cb-lang">CSV</span></div>
+<pre>product_tmpl_id,attribute_id,value_id,credit,cash,modern_trade,homeowner,online,addons_price_credit,addons_price_cash,addons_price_modern_trade,addons_price_homeowner,addons_price_online,discount_credit,discount_cash,discount_modern_trade,discount_homeowner,discount_online
+ม่านม้วน,สี,ขาว,1500,1400,1600,1350,1450,0,0,0,0,0,50%+20%,55%+20%,50%+20%,50%+20%,50%+20%
+ม่านม้วน,สี,เบจ,1500,1400,1600,1350,1450,0,0,0,0,0,50%+20%,55%+20%,50%+20%,50%+20%,50%+20%</pre>
+        </div>
+
+        <div class="callout" style="margin-top:.9rem">
+          <span class="callout-icon">!</span>
+          <span>บันทึกไฟล์ด้วย encoding <strong>UTF-8</strong> เสมอ (ใน Excel: Save As → CSV UTF-8 (Comma delimited)) — ถ้าใช้ UTF-8 with BOM อาจทำให้ column แรก import ผิดพลาด</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step C: Import -->
+    <div class="fn-card" style="margin-bottom:1.2rem">
+      <div class="fn-head">
+        <span class="fn-num">C</span>
+        <span class="fn-sig">Import เข้า Odoo</span>
+      </div>
+      <div class="fn-body">
+        <ol style="margin:0;padding-left:1.3rem;line-height:2.1">
+          <li>เปิดหน้า <strong>Pricing Attribute Value</strong> (List View)</li>
+          <li>กด <strong>Favorites</strong> (ดาว ★) → <strong>Import Records</strong><br>
+              <span style="font-size:.82rem;color:#666">หรือกด Action (⚙) → Import ขึ้นอยู่กับ Odoo version</span></li>
+          <li>อัปโหลดไฟล์ CSV → Odoo จะ map column อัตโนมัติถ้าชื่อ header ตรง</li>
+          <li>กด <strong>Test Import</strong> ก่อนเสมอ — ดู error แต่ละแถว</li>
+          <li>แก้ไขข้อผิดพลาด (ดูหัวข้อ D) แล้วกด <strong>Import</strong></li>
+        </ol>
+      </div>
+    </div>
+
+    <!-- Step D: Common errors -->
+    <div class="fn-card">
+      <div class="fn-head">
+        <span class="fn-num">D</span>
+        <span class="fn-sig">Error ที่พบบ่อยและวิธีแก้</span>
+      </div>
+      <div class="fn-body">
+        <div class="tbl-wrap">
+          <table>
+            <tr><th>Error</th><th>สาเหตุ</th><th>วิธีแก้</th></tr>
+            <tr>
+              <td><code>No matching record found for … in field …</code></td>
+              <td>ชื่อ Many2one ไม่ตรงกับ record ใน DB</td>
+              <td>Export record ที่มีอยู่มาดู spelling ที่ถูกต้อง หรือใช้ <code>field/id</code> แบบ External ID แทน</td>
+            </tr>
+            <tr>
+              <td><code>Invalid value for field … (expected float)</code></td>
+              <td>มีช่องว่าง, comma หรือตัวอักษรใน Float field</td>
+              <td>ลบ comma ออก (<code>1,500</code> → <code>1500</code>) และตรวจว่าไม่มีช่องว่างท้าย cell</td>
+            </tr>
+            <tr>
+              <td>ภาษาไทยเป็น ??? หรืออักขระแปลก</td>
+              <td>บันทึก CSV ด้วย encoding ผิด (ANSI / TIS-620)</td>
+              <td>เปิดใน Notepad → Save As → Encoding: UTF-8 แล้ว import ใหม่</td>
+            </tr>
+            <tr>
+              <td>Column ไม่ถูก map อัตโนมัติ</td>
+              <td>ชื่อ header ไม่ตรง Technical Name</td>
+              <td>ลาก map เองในหน้า Import หรือ Export ก่อนเพื่อดูชื่อที่ถูกต้อง</td>
+            </tr>
+          </table>
+        </div>
+
+        <div class="callout" style="margin-top:1rem">
+          <span class="callout-icon">i</span>
+          <span>ถ้าต้องการ <strong>update แถวที่มีอยู่แล้ว</strong> (ไม่ create ใหม่) ให้รวม column <code>id</code> (External ID) ไว้ใน CSV ด้วย — Odoo จะ update record เดิมแทนการสร้างซ้ำ</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════
+       WALKTHROUGH EXAMPLE
+  ═════════════════════════════════════════════ -->
+  <section id="walkthrough">
+    <div class="sec-head"><h2>ตัวอย่างครบวงจร — ม่านโรลเลอร์ตัวอย่าง</h2></div>
+
+    <!-- Scenario box -->
+    <div class="callout ok" style="margin-bottom:1.6rem;align-items:flex-start;gap:.7rem">
+      <span class="callout-icon" style="margin-top:.1rem">✎</span>
+      <div>
+        <strong>โจทย์:</strong> สร้าง Pricing Formula สำหรับ Product Template <strong>"ม่านโรลเลอร์ตัวอย่าง"</strong><br>
+        มี 3 Attribute · ราคาต่อ ตร.ม. สำหรับผ้า · ราคาคงที่สำหรับระบบและราง · รองรับ pricelist credit / cash / online
+      </div>
+    </div>
+
+    <!-- ─── Step 1 ─── -->
+    <div class="subsec-head">Step 1 — สร้าง Product Template + Attributes ใน Odoo</div>
+    <ol style="line-height:2.1;margin:0 0 1rem;padding-left:1.4rem">
+      <li>สร้าง Product Template ชื่อ <code>ม่านโรลเลอร์ตัวอย่าง</code>, Type = <em>Storable / Service</em></li>
+      <li>แท็บ <strong>Attributes &amp; Variants</strong> เพิ่ม Attribute ทั้ง 3 ตามตาราง</li>
+    </ol>
+    <div class="tbl-wrap" style="margin-bottom:1.4rem">
+      <table>
+        <tr><th>Attribute</th><th>Values</th><th>หมายเหตุ</th></tr>
+        <tr><td class="tc">ผ้า</td><td>ขาว BlackOut, ครีม Sunscreen</td><td>ราคาต่อ ตร.ม. — แตกต่างตาม pricelist</td></tr>
+        <tr><td class="tc">ระบบ</td><td>สายดึง, มอเตอร์</td><td>สายดึง = ฟรี; มอเตอร์ = ราคาคงที่จาก PAV</td></tr>
+        <tr><td class="tc">ราง</td><td>รางเดียว, รางคู่</td><td>รางเดียว = ฟรี; รางคู่ = ราคาคงที่จาก PAV</td></tr>
+      </table>
+    </div>
+
+    <!-- ─── Step 2 ─── -->
+    <div class="subsec-head">Step 2 — กรอก Pricing Attribute Value (PAV)</div>
+    <p style="margin:.4rem 0 .8rem">เปิด <strong>Configurator → Configuration → Pricing Attribute Value</strong> กรอกข้อมูลตามตาราง (แสดงเฉพาะราคาหลัก 3 pricelist)</p>
+    <div class="tbl-wrap" style="margin-bottom:1.4rem">
+      <table>
+        <tr><th>Attribute</th><th>Value</th><th>credit</th><th>cash</th><th>online</th><th>discount_credit</th><th>discount_cash</th><th>discount_online</th></tr>
+        <tr><td class="tc">ผ้า</td><td>ขาว BlackOut</td>  <td class="tc">1500</td><td class="tc">1400</td><td class="tc">1450</td><td class="tc">50%+20%</td><td class="tc">55%+20%</td><td class="tc">50%+20%</td></tr>
+        <tr><td class="tc">ผ้า</td><td>ครีม Sunscreen</td><td class="tc">1200</td><td class="tc">1100</td><td class="tc">1150</td><td class="tc">50%+20%</td><td class="tc">55%+20%</td><td class="tc">50%+20%</td></tr>
+        <tr><td class="tc">ระบบ</td><td>สายดึง</td>       <td class="tc">0</td>   <td class="tc">0</td>   <td class="tc">0</td>   <td class="tc">—</td>      <td class="tc">—</td>      <td class="tc">—</td></tr>
+        <tr><td class="tc">ระบบ</td><td>มอเตอร์</td>      <td class="tc">8500</td><td class="tc">8000</td><td class="tc">8200</td><td class="tc">—</td>      <td class="tc">—</td>      <td class="tc">—</td></tr>
+        <tr><td class="tc">ราง</td><td>รางเดียว</td>      <td class="tc">0</td>   <td class="tc">0</td>   <td class="tc">0</td>   <td class="tc">—</td>      <td class="tc">—</td>      <td class="tc">—</td></tr>
+        <tr><td class="tc">ราง</td><td>รางคู่</td>        <td class="tc">1200</td><td class="tc">1100</td><td class="tc">1150</td><td class="tc">—</td>      <td class="tc">—</td>      <td class="tc">—</td></tr>
+      </table>
+    </div>
+
+    <!-- ─── Step 3 ─── -->
+    <div class="subsec-head">Step 3 — เขียน Pricing Formula (ทุก Section)</div>
+    <p style="margin:.4rem 0 .8rem">สร้าง record ใน <strong>Pricing Formula</strong> แล้วพิมพ์โค้ดด้านล่างลงใน field <em>Python Code</em></p>
+
+    <!-- §0 -->
+    <div class="cb" style="margin-bottom:.9rem">
+      <div class="cb-bar"><span class="cb-label">§0 — Init</span><span class="cb-lang">Python</span></div>
+<pre>price       = <span class="nm">0.0</span>      <span class="ann">← ผลรวมราคาสุทธิทั้งหมด (accumulator)</span>
+attr_prices = {}       <span class="ann">← เก็บรายละเอียดรายตัวแสดงใน UI</span></pre>
+    </div>
+
+    <!-- §1 -->
+    <div class="cb" style="margin-bottom:.9rem">
+      <div class="cb-bar"><span class="cb-label">§1 — Pricelist Detection</span><span class="cb-lang">Python</span></div>
+<pre>pricelist_name    = <span class="st">'online'</span>   <span class="ann">← default ถ้าไม่เจอ pricelist ใดๆ</span>
+current_pricelist = <span class="kw">None</span>
+current_partner   = <span class="kw">None</span>
+
+<span class="kw">if</span> sale_order:
+    current_pricelist = sale_order.pricelist_id
+    current_partner   = sale_order.partner_id
+<span class="kw">elif</span> wizard <span class="kw">and</span> wizard.sale_order_id:
+    current_pricelist = wizard.sale_order_id.pricelist_id
+    current_partner   = wizard.sale_order_id.partner_id
+
+<span class="kw">if not</span> current_partner:
+    current_partner = env.user.partner_id
+
+<span class="kw">if</span> current_pricelist:
+    pl_id = current_pricelist.id
+    <span class="kw">if</span>   pl_id <span class="kw">in</span> [<span class="nm">8</span>]: pricelist_name = <span class="st">'credit'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">9</span>]: pricelist_name = <span class="st">'cash'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">7</span>]: pricelist_name = <span class="st">'homeowner'</span>
+    <span class="kw">elif</span> pl_id <span class="kw">in</span> [<span class="nm">6</span>]: pricelist_name = <span class="st">'modern_trade'</span>
+    <span class="ann">                      ↑ เติม ID จริงจาก Sales → Configuration → Pricelists → URL</span></pre>
+    </div>
+
+    <!-- §2 -->
+    <div class="cb" style="margin-bottom:.9rem">
+      <div class="cb-bar"><span class="cb-label">§2 — Dimensions</span><span class="cb-lang">Python</span></div>
+<pre>width = height = <span class="nm">0.0</span>
+<span class="kw">if</span> wizard:
+    <span class="kw">try</span>:
+        width  = <span class="fn">float</span>(wizard.width  <span class="kw">or</span> <span class="nm">0</span>)
+        height = <span class="fn">float</span>(wizard.height <span class="kw">or</span> <span class="nm">0</span>)
+    <span class="kw">except</span> Exception: <span class="kw">pass</span>
+
+width_eval  = width  <span class="kw">or</span> <span class="nm">1.0</span>   <span class="ann">← ป้องกัน 0 เข้าคูณ</span>
+height_eval = height <span class="kw">or</span> <span class="nm">1.0</span>
+area = (width_eval * height_eval) / <span class="nm">10000</span>   <span class="ann">← cm² → m²  (200×250 = 50000/10000 = 5 ตร.ม.)</span></pre>
+    </div>
+
+    <!-- §3 -->
+    <div class="cb" style="margin-bottom:.9rem">
+      <div class="cb-bar"><span class="cb-label">§3 — Helper Functions (copy จากสูตรอื่น ไม่ต้องแก้)</span><span class="cb-lang">Python</span></div>
+<pre><span class="kw">def</span> <span class="fn">calc_multi_discount</span>(price_val, discount_str):
+    <span class="cm"># ... (copy จากสูตรที่มีอยู่)</span>
+
+<span class="kw">def</span> <span class="fn">get_component_qty</span>(c_desc, default_qty=<span class="nm">1.0</span>, prefix_match=<span class="nm">False</span>):
+    <span class="cm"># ... (copy จากสูตรที่มีอยู่)</span>
+
+<span class="kw">def</span> <span class="fn">get_component_sales_price</span>(c_desc, default_price=<span class="nm">0.0</span>):
+    <span class="cm"># ... (copy จากสูตรที่มีอยู่)</span>
+
+<span class="kw">def</span> <span class="fn">get_price_from_pricing_line</span>(pl):
+    <span class="kw">if not</span> pl: <span class="kw">return</span> <span class="nm">0.0</span>, <span class="nm">0.0</span>, <span class="st">''</span>
+    <span class="kw">if</span>   pricelist_name == <span class="st">'credit'</span>:       <span class="kw">return</span> pl.credit,       pl.addons_price_credit,       pl.discount_credit       <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'cash'</span>:         <span class="kw">return</span> pl.cash,         pl.addons_price_cash,         pl.discount_cash         <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'homeowner'</span>:    <span class="kw">return</span> pl.homeowner,    pl.addons_price_homeowner,    pl.discount_homeowner    <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">elif</span> pricelist_name == <span class="st">'modern_trade'</span>: <span class="kw">return</span> pl.modern_trade, pl.addons_price_modern_trade, pl.discount_modern_trade <span class="kw">or</span> <span class="st">''</span>
+    <span class="kw">else</span>:                                   <span class="kw">return</span> pl.online,       pl.addons_price_online,       pl.discount_online       <span class="kw">or</span> <span class="st">''</span>
+
+<span class="kw">def</span> <span class="fn">get_attr_value_float</span>(attr_name=<span class="kw">None</span>, attr_id=<span class="kw">None</span>, default=<span class="nm">0.0</span>):
+    <span class="cm"># ... (copy จากสูตรที่มีอยู่)</span></pre>
+    </div>
+
+    <!-- §4 -->
+    <div class="cb" style="margin-bottom:.9rem">
+      <div class="cb-bar"><span class="cb-label">§4 — attr_val_ids</span><span class="cb-lang">Python</span></div>
+<pre>attr_val_ids = {}
+<span class="kw">if</span> wizard:
+    <span class="kw">try</span>:
+        <span class="kw">for</span> l <span class="kw">in</span> wizard.attr_line_ids:
+            <span class="kw">if</span> l.attribute_id <span class="kw">and</span> l.value_id:
+                attr_val_ids[l.attribute_id.name] = l.value_id.id
+    <span class="kw">except</span> Exception: <span class="kw">pass</span></pre>
+    </div>
+
+    <!-- §5 Main Loop -->
+    <div class="cb" style="margin-bottom:.9rem">
+      <div class="cb-bar"><span class="cb-label">§5 — Main Loop (หัวใจของสูตร)</span><span class="cb-lang">Python</span></div>
+<pre>tmpl_id = <span class="kw">None</span>
+<span class="kw">if</span> wizard <span class="kw">and</span> wizard.product_tmpl_id:
+    tmpl_id = wizard.product_tmpl_id.id
+<span class="kw">elif</span> sale_order:
+    <span class="kw">try</span>: tmpl_id = sale_order.order_line[<span class="nm">0</span>].product_id.product_tmpl_id.id
+    <span class="kw">except</span>: <span class="kw">pass</span>
+
+<span class="kw">for</span> attr_name, val_name <span class="kw">in</span> values.items():
+    <span class="kw">if not</span> val_name <span class="kw">or not</span> <span class="fn">isinstance</span>(val_name, <span class="fn">str</span>): <span class="kw">continue</span>
+
+    <span class="cm"># ── A: reset ต้นรอบ ────────────────────────────────────</span>
+    unit_price   = <span class="nm">0.0</span>
+    addons_price = <span class="nm">0.0</span>
+    qty          = <span class="nm">1.0</span>
+    discount_str = <span class="st">''</span>
+    val_id = attr_val_ids.get(attr_name)
+
+    <span class="cm"># ── B: lookup PAV ──────────────────────────────────────</span>
+    <span class="kw">if</span> tmpl_id:
+        pricing_line = env[<span class="st">'pricing.attribute.value'</span>].search([
+            (<span class="st">'product_tmpl_id'</span>, <span class="st">'='</span>, tmpl_id),
+            (<span class="st">'attribute_id.name'</span>, <span class="st">'='</span>, attr_name),
+            (<span class="st">'value_id.name'</span>, <span class="st">'='</span>, val_name),
+        ], limit=<span class="nm">1</span>)
+        <span class="kw">if</span> pricing_line:
+            unit_price, addons_price, discount_str = get_price_from_pricing_line(pricing_line)
+
+    unit_price = get_component_sales_price(val_name, unit_price)
+    <span class="ann">                ↑ ถ้า val_name ตรงกับ BOM Component จะ override ราคา</span>
+
+    <span class="cm"># ── C: logic เฉพาะแต่ละ Attribute ────────────────────</span>
+    <span class="kw">if</span> attr_name == <span class="st">'ผ้า'</span>:
+        qty = area           <span class="ann">← ราคาต่อ ตร.ม. × พื้นที่จริง</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'ระบบ'</span>:
+        <span class="kw">if</span> val_name == <span class="st">'สายดึง'</span> <span class="kw">or</span> val_id == <span class="nm">111</span>:
+            unit_price = <span class="nm">0.0</span>   <span class="ann">← ฟรี ไม่คิดราคา</span>
+        <span class="cm"># มอเตอร์: unit_price จาก PAV (B) แล้ว, qty=1 ↑ default</span>
+
+    <span class="kw">elif</span> attr_name == <span class="st">'ราง'</span>:
+        <span class="kw">if</span> val_name == <span class="st">'รางเดียว'</span> <span class="kw">or</span> val_id == <span class="nm">121</span>:
+            <span class="kw">pass</span>   <span class="ann">← ราคา 0 จาก PAV แล้ว / ตั้งใจไม่คิดราคาพิเศษ</span>
+        <span class="cm"># รางคู่: unit_price จาก PAV (B) แล้ว, qty=1 ↑ default</span>
+
+    <span class="kw">else</span>:
+        <span class="kw">continue</span>   <span class="ann">← Attribute อื่นที่ไม่ต้องการ logic → ข้ามทั้งรอบ ไม่เพิ่มราคา</span>
+
+    <span class="cm"># ── D: คำนวณรวม + เก็บ ──────────────────────────────</span>
+    total_price = qty * unit_price
+    discount_amt, net_price = calc_multi_discount(total_price + addons_price, discount_str)
+    price += net_price
+
+    discount_pct_str = discount_str
+
+    attr_prices[attr_name] = {
+        <span class="st">'price_unit'</span>:       unit_price,
+        <span class="st">'qty'</span>:              qty,
+        <span class="st">'price_val'</span>:        total_price,
+        <span class="st">'addones_price'</span>:    addons_price,
+        <span class="st">'discount_percent'</span>: discount_pct_str,
+        <span class="st">'discount_amount'</span>:  <span class="fn">round</span>(discount_amt, <span class="nm">2</span>),
+    }</pre>
+    </div>
+
+    <!-- ─── Step 4 ─── -->
+    <div class="subsec-head">Step 4 — ผูก Formula กับ Product</div>
+    <ol style="line-height:2.1;margin:0 0 1.4rem;padding-left:1.4rem">
+      <li>เปิด Product Template <strong>ม่านโรลเลอร์ตัวอย่าง</strong></li>
+      <li>แท็บ <strong>Configuration</strong> (หรือ General Info) → field <strong>Pricing Formula</strong></li>
+      <li>เลือก formula ที่เพิ่งสร้าง → กด <strong>Save</strong></li>
+    </ol>
+
+    <!-- ─── Step 5: Trace ─── -->
+    <div class="subsec-head">Step 5 — ตรวจสอบด้วยตัวอย่างการคำนวณ</div>
+    <div class="callout" style="margin-bottom:1rem">
+      <span class="callout-icon">i</span>
+      <span><strong>สถานการณ์:</strong> ลูกค้าเลือก ผ้า=ขาว BlackOut · ระบบ=มอเตอร์ · ราง=รางคู่<br>
+      ขนาด กว้าง 200 cm × สูง 250 cm · Pricelist = <strong>Cash</strong></span>
+    </div>
+
+    <div class="tbl-wrap" style="margin-bottom:1rem">
+      <table>
+        <tr><th>Attribute</th><th>val_name</th><th>unit_price (cash)</th><th>qty</th><th>total_price</th><th>discount</th><th>net_price</th></tr>
+        <tr>
+          <td class="tc">ผ้า</td><td>ขาว BlackOut</td>
+          <td class="tc">1,400</td>
+          <td class="tc">5.0 m²<br><span style="font-size:.78rem;color:#888">(200×250÷10000)</span></td>
+          <td class="tc">7,000</td>
+          <td class="tc">55%+20%</td>
+          <td class="tc"><strong>2,520</strong></td>
+        </tr>
+        <tr>
+          <td class="tc">ระบบ</td><td>มอเตอร์</td>
+          <td class="tc">8,000</td><td class="tc">1.0</td><td class="tc">8,000</td><td class="tc">—</td>
+          <td class="tc"><strong>8,000</strong></td>
+        </tr>
+        <tr>
+          <td class="tc">ราง</td><td>รางคู่</td>
+          <td class="tc">1,100</td><td class="tc">1.0</td><td class="tc">1,100</td><td class="tc">—</td>
+          <td class="tc"><strong>1,100</strong></td>
+        </tr>
+        <tr style="font-weight:700;background:var(--acc-lt)">
+          <td colspan="6" style="text-align:right;padding-right:1rem">price (ผลรวม)</td>
+          <td class="tc">11,620 บาท</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="cb">
+      <div class="cb-bar"><span class="cb-label">การคำนวณ discount ผ้า (55%+20%)</span><span class="cb-lang">Trace</span></div>
+<pre>base  = total_price + addons_price = 7000 + 0 = 7000
+step1 = 7000 × (1 − 0.55) = 7000 × 0.45 = 3150
+step2 = 3150 × (1 − 0.20) = 3150 × 0.80 = 2520   ← net_price
+discount_amt = 7000 − 2520 = 4480</pre>
+    </div>
+
+    <div class="callout ok" style="margin-top:1.2rem">
+      <span class="callout-icon">✓</span>
+      <span>สูตรนี้ใช้ Pattern: <strong>3 (Area)</strong> สำหรับผ้า · <strong>4 (val_name Guard + pass)</strong> สำหรับระบบ/ราง<br>
+      ถ้าเพิ่ม Attribute ใหม่ก็เพิ่ม <code>elif attr_name == '...':</code> ใน Section C ได้ทันที</span>
+    </div>
+  </section>
+
+  <footer class="doc-footer">
+    <span>BS Pricing Formula · Odoo 14</span>
+    <span>Basic Solution Co., Ltd.</span>
+  </footer>
+
+</main>
+</div>
+
+<script>
+// TOC scrollspy
+(function () {
+  var links   = document.querySelectorAll('.toc-rail a[href^="#"]');
+  var targets = [];
+
+  links.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    var el = document.getElementById(id);
+    if (el) targets.push({ el: el, a: a });
+  });
+
+  function update() {
+    var scrollY = window.scrollY + 90;
+    var active  = null;
+    for (var i = 0; i < targets.length; i++) {
+      if (targets[i].el.getBoundingClientRect().top + window.scrollY <= scrollY) {
+        active = targets[i].a;
+      }
+    }
+    links.forEach(function (a) { a.classList.remove('active'); });
+    if (active) active.classList.add('active');
+  }
+
+  window.addEventListener('scroll', update, { passive: true });
+  update();
+}());
+</script>
+
+</body>
+</html>
