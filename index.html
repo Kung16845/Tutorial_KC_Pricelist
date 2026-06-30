@@ -146,7 +146,7 @@
             <div class="farr-lbl" style="color:var(--grn)">ใช่ ↓</div>
             <div class="fbox grn" style="min-width:200px;font-size:.74rem">A — Reset unit_price · qty · addons · discount</div>
             <div class="farr"></div>
-            <div class="fbox pur" style="min-width:200px;font-size:.74rem">B — Lookup B1 pricing.attr.value + B2 BOM</div>
+            <div class="fbox pur" style="min-width:200px;font-size:.74rem">B — B1 PAV lookup · B2 component_id override</div>
             <div class="farr"></div>
             <div class="fbox amb" style="min-width:200px;font-size:.74rem">C — if/elif chain แยกตาม attr_name</div>
             <div class="farr"></div>
@@ -524,9 +524,11 @@ tmpl_id = product_template.id <span class="kw">if</span> product_template <span 
 
     <!-- B -->
     <div class="subsec-head" id="sb">B — Lookup ราคาพื้นฐาน</div>
+    <p style="margin:.4rem 0 1rem;color:var(--fg-dim)">Section B ทำงาน <strong>2 ขั้นตอนต่อเนื่อง</strong> — B1 ค้นราคาในตาราง PAV · B2 ตรวจ <code>component_id</code> บน Attribute Value และถ้ามีให้ดึงราคาจาก Pricelist ของ Component นั้นโดยตรง</p>
+
     <div class="cb">
-      <div class="cb-bar"><span class="cb-label">B1 pricing.attribute.value + B2 BOM override</span><span class="cb-lang">Python</span></div>
-<pre>    <span class="cm"># B1: Tab "Pricing Attribute Value" ของ Product</span>
+      <div class="cb-bar"><span class="cb-label">B1 — ค้นราคาใน pricing.attribute.value (PAV)</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="cm"># B1: ดึง unit_price / addons_price / discount_str จากตาราง PAV ของ Product</span>
     <span class="kw">if</span> tmpl_id:
         pricing_line = env[<span class="st">'pricing.attribute.value'</span>].search([
             (<span class="st">'product_tmpl_id'</span>, <span class="st">'='</span>, tmpl_id),
@@ -535,15 +537,60 @@ tmpl_id = product_template.id <span class="kw">if</span> product_template <span 
         ], limit=<span class="nm">1</span>)
         <span class="kw">if</span> pricing_line:
             unit_price, addons_price, discount_str = get_price_from_pricing_line(pricing_line)
-
-    <span class="cm"># B2: BOM Component override</span>
-    unit_price = get_component_sales_price(val_name, unit_price)
-    <span class="ann">               ↑ ถ้า val_name ตรงกับ Component → ใช้ราคา Pricelist Component
-               ↑ ถ้าไม่เจอ → คืน default=unit_price (ค่าจาก B1 คงเดิม)</span></pre>
+            <span class="ann">                                               ↑ Fn 4 เลือก field ตาม pricelist_name (§1)</span></pre>
     </div>
-    <div class="callout warn">
+
+    <div class="cb" style="margin-top:.8rem">
+      <div class="cb-bar"><span class="cb-label">B2 — Component override ผ่าน component_id เท่านั้น</span><span class="cb-lang">Python</span></div>
+<pre>    <span class="cm"># B2: ถ้า PAV มี component_id → override unit_price ด้วยราคา Pricelist ของ Component นั้น</span>
+    pav_rec = env[<span class="st">'product.attribute.value'</span>].browse(val_id) <span class="kw">if</span> val_id <span class="kw">else</span> <span class="kw">None</span>
+    <span class="ann">           ↑ val_id = attr_val_ids.get(attr_name) — PAV id จาก §4 (None ถ้าไม่มี wizard)</span>
+
+    <span class="kw">if</span> pav_rec <span class="kw">and</span> pav_rec.component_id:
+        <span class="ann">    ↑ product.attribute.value มี field component_id (Many2one → product.product)
+           ↑ ถ้ากรอก Component ไว้ → ดึงราคาจาก Pricelist โดยตรง (ID-safe ไม่ขึ้นกับชื่อ)</span>
+        comp_prod  = pav_rec.component_id               <span class="ann">← product.product record</span>
+        comp_price = <span class="nm">0.0</span>
+        <span class="kw">if</span> current_pricelist:
+            <span class="kw">try</span>:
+                comp_price = current_pricelist.get_product_price(
+                    comp_prod, <span class="nm">1.0</span>, current_partner)
+                <span class="ann">               ↑ Pricelist → ราคาขายของ comp_prod สำหรับ current_partner, qty=1</span>
+            <span class="kw">except</span> Exception:
+                <span class="kw">pass</span>   <span class="ann">← Pricelist ไม่มีกฎสำหรับ comp_prod → comp_price ยังคือ 0.0</span>
+        unit_price = comp_price <span class="kw">if</span> comp_price > <span class="nm">0</span> <span class="kw">else</span> comp_prod.lst_price
+        <span class="ann">           ↑ comp_price > 0 → ใช้ราคา Pricelist
+           ↑ comp_price = 0 (ไม่มีกฎ / ไม่มี Pricelist) → fallback เป็น Sales Price (lst_price)</span>
+    <span class="cm"># ถ้า component_id ว่าง → unit_price คงค่าจาก B1 ไว้ ไม่ต้องทำอะไรเพิ่ม</span></pre>
+    </div>
+
+    <div class="tbl-wrap" style="margin-top:1rem">
+      <table>
+        <tr><th>เส้นทาง</th><th>เงื่อนไข</th><th>unit_price ที่ได้</th><th>เหมาะกับ</th></tr>
+        <tr>
+          <td><strong>B2-A</strong><br><span style="font-size:.78rem;color:var(--acc)">component_id ตั้งไว้</span></td>
+          <td><code>val_id</code> มีค่า<br>และ PAV มี <code>component_id</code></td>
+          <td><code>pricelist.get_product_price()</code><br>→ fallback <code>comp_prod.lst_price</code></td>
+          <td>Component ที่ผูก PAV ชัดเจน<br>ราคาตาม Pricelist อัตโนมัติ</td>
+        </tr>
+        <tr>
+          <td><strong>B2-B</strong><br><span style="font-size:.78rem;color:var(--fg-dim)">ไม่มี component_id</span></td>
+          <td><code>component_id</code> ว่าง<br>หรือ <code>val_id</code> เป็น None</td>
+          <td>unit_price = ค่าจาก B1 (คงเดิม)</td>
+          <td>Attribute ที่ใช้ราคา PAV table อย่างเดียว</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="callout" style="margin-top:1rem">
+      <span class="callout-icon">i</span>
+      <span><strong>component_id</strong> คือ field <code>Many2one → product.product</code> ที่เพิ่มบน <code>product.attribute.value</code>
+        โดย module <code>bs_dynamic_bom_sale</code> — ตั้งค่าได้ที่ Configuration → Attribute Values</span>
+    </div>
+    <div class="callout warn" style="margin-top:.6rem">
       <span class="callout-icon">⚠</span>
-      <span><strong>B2 จะ override B1 เสมอ</strong> ถ้าชื่อ val_name ตรงกับ Component ใน BOM</span>
+      <span><strong>B2 override B1 เฉพาะเมื่อ component_id มีค่า</strong> — ถ้าไม่ได้ผูก Component ไว้
+        unit_price จาก B1 ถูกนำไปใช้ต่อใน Section C ตรงๆ โดยไม่ผ่าน BOM search ใดๆ</span>
     </div>
 
     <!-- C -->
@@ -1335,7 +1382,7 @@ area = (width_eval * height_eval) / <span class="nm">10000</span>   <span class=
     discount_str = <span class="st">''</span>
     val_id = attr_val_ids.get(attr_name)
 
-    <span class="cm"># ── B: lookup PAV ──────────────────────────────────────</span>
+    <span class="cm"># ── B1: lookup PAV ─────────────────────────────────────</span>
     <span class="kw">if</span> tmpl_id:
         pricing_line = env[<span class="st">'pricing.attribute.value'</span>].search([
             (<span class="st">'product_tmpl_id'</span>, <span class="st">'='</span>, tmpl_id),
@@ -1345,8 +1392,19 @@ area = (width_eval * height_eval) / <span class="nm">10000</span>   <span class=
         <span class="kw">if</span> pricing_line:
             unit_price, addons_price, discount_str = get_price_from_pricing_line(pricing_line)
 
-    unit_price = get_component_sales_price(val_name, unit_price)
-    <span class="ann">                ↑ ถ้า val_name ตรงกับ BOM Component จะ override ราคา</span>
+    <span class="cm"># ── B2: Component override ผ่าน component_id ────────────</span>
+    pav_rec = env[<span class="st">'product.attribute.value'</span>].browse(val_id) <span class="kw">if</span> val_id <span class="kw">else</span> <span class="kw">None</span>
+    <span class="kw">if</span> pav_rec <span class="kw">and</span> pav_rec.component_id:           <span class="ann">← มี component_id → override unit_price</span>
+        comp_prod  = pav_rec.component_id
+        comp_price = <span class="nm">0.0</span>
+        <span class="kw">if</span> current_pricelist:
+            <span class="kw">try</span>:
+                comp_price = current_pricelist.get_product_price(
+                    comp_prod, <span class="nm">1.0</span>, current_partner)
+            <span class="kw">except</span> Exception:
+                <span class="kw">pass</span>
+        unit_price = comp_price <span class="kw">if</span> comp_price > <span class="nm">0</span> <span class="kw">else</span> comp_prod.lst_price
+    <span class="cm"># component_id ว่าง → unit_price จาก B1 คงเดิม (ตัวอย่างนี้ทุก Attribute ใช้เส้นทางนี้)</span>
 
     <span class="cm"># ── C: logic เฉพาะแต่ละ Attribute ────────────────────</span>
     <span class="kw">if</span> attr_name == <span class="st">'ผ้า'</span>:
@@ -1438,6 +1496,64 @@ discount_amt = 7000 − 2520 = 4480</pre>
       <span class="callout-icon">✓</span>
       <span>สูตรนี้ใช้ Pattern: <strong>3 (Area)</strong> สำหรับผ้า · <strong>4 (val_name Guard + pass)</strong> สำหรับระบบ/ราง<br>
       ถ้าเพิ่ม Attribute ใหม่ก็เพิ่ม <code>elif attr_name == '...':</code> ใน Section C ได้ทันที</span>
+    </div>
+
+    <!-- B2-A example callout -->
+    <div class="subsec-head" style="margin-top:2rem">ตัวอย่าง B2-A — เมื่อ PAV มี component_id</div>
+    <p style="margin:.4rem 0 .8rem">ในตัวอย่างข้างต้นทุก Attribute ไม่ได้ผูก <code>component_id</code> → B2 ไม่ทำงาน ราคาคงมาจาก B1 ตรงๆ
+    ถ้าต้องการให้ Attribute <strong>ระบบ / มอเตอร์</strong> ดึงราคาตาม Pricelist โดยตรงจาก product record — ทำตามขั้นตอนนี้</p>
+
+    <div class="fn-card" style="margin-bottom:1rem">
+      <div class="fn-head">
+        <span class="fn-num">1</span>
+        <span class="fn-sig">ตั้งค่า component_id บน Attribute Value</span>
+      </div>
+      <div class="fn-body">
+        <ol style="margin:0;padding-left:1.3rem;line-height:2.1">
+          <li>ไปที่ <strong>Configuration → Attribute Values</strong> (หรือเปิด Attribute Value record ตรงๆ)</li>
+          <li>เปิด record <strong>มอเตอร์</strong> (ของ Attribute <em>ระบบ</em>)</li>
+          <li>field <strong>Component</strong> → เลือก product <em>มอเตอร์ม้วนม่าน</em> (product.product)</li>
+          <li>กด <strong>Save</strong></li>
+        </ol>
+        <div class="callout" style="margin-top:.9rem">
+          <span class="callout-icon">i</span>
+          <span>field <code>component_id</code> เพิ่มโดย module <code>bs_dynamic_bom_sale</code> — ถ้าไม่เห็น field ในฟอร์ม ให้ตรวจว่า module นั้น install อยู่</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="fn-card" style="margin-bottom:1rem">
+      <div class="fn-head">
+        <span class="fn-num">2</span>
+        <span class="fn-sig">ผลลัพธ์เมื่อรัน Preview (เส้นทาง B2-A)</span>
+      </div>
+      <div class="fn-body">
+        <div class="cb">
+          <div class="cb-bar"><span class="cb-label">Trace: attr_name='ระบบ', val_name='มอเตอร์', pricelist=Cash</span><span class="cb-lang">Trace</span></div>
+<pre><span class="cm"># B1: เจอ PAV record → unit_price = 8000 (cash)</span>
+<span class="cm"># B2-A: pav_rec.component_id = product 'มอเตอร์ม้วนม่าน' (มีค่า)</span>
+comp_prod  = &lt;product.product: มอเตอร์ม้วนม่าน&gt;
+comp_price = current_pricelist.get_product_price(comp_prod, 1.0, partner)
+           = <span class="nm">7800</span>   <span class="ann">← ราคาที่ Cash pricelist กำหนดไว้สำหรับ product นี้</span>
+unit_price = <span class="nm">7800</span>   <span class="ann">← B2-A override B1 (8000 → 7800)</span>
+
+<span class="cm"># ผลรวมแถวนี้: total = 1 × 7800 = 7800 บาท</span></pre>
+        </div>
+        <div class="callout ok" style="margin-top:.8rem">
+          <span class="callout-icon">✓</span>
+          <span>ถ้า Pricelist Cash มีกฎสำหรับมอเตอร์ที่ราคาต่างจาก PAV table → <strong>B2-A จะใช้ราคา Pricelist</strong> เสมอ
+            ทำให้ราคาสินค้า Component sync กับ Pricelist โดยอัตโนมัติ ไม่ต้องอัปเดต PAV ด้วยมือ</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="tbl-wrap" style="margin-bottom:1rem">
+      <table>
+        <tr><th>สถานการณ์</th><th>unit_price</th><th>แหล่งที่มา</th></tr>
+        <tr><td>PAV cash = 8000 · Pricelist cash = 7800 · component_id ตั้งไว้</td><td class="tc"><strong>7800</strong></td><td>B2-A (Pricelist override)</td></tr>
+        <tr><td>PAV cash = 8000 · Pricelist ไม่มีกฎสำหรับ comp_prod · component_id ตั้งไว้</td><td class="tc"><strong>8500</strong> (lst_price)</td><td>B2-A (lst_price fallback)</td></tr>
+        <tr><td>PAV cash = 8000 · component_id ไม่ได้ตั้ง</td><td class="tc"><strong>8000</strong></td><td>B1 คงเดิม (ไม่มี override)</td></tr>
+      </table>
     </div>
   </section>
 
